@@ -1,0 +1,5 @@
+requests
+telethon
+solana
+base58
+python-dotenv
