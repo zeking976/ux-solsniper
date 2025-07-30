@@ -1,58 +1,74 @@
 sniper.py
 
-import os import random import json import requests import time import datetime from telethon import TelegramClient, events from solana.rpc.api import Client from solana.keypair import Keypair from base64 import b64decode
+import os import time import random import requests import json from datetime import datetime, timedelta from solana.rpc.api import Client from solana.transaction import Transaction from solana.publickey import PublicKey from solana.keypair import Keypair from solana.system_program import transfer, TransferParams from telegram import Bot
 
-ENV VARS
+Load ENV
 
-TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID")) TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH") TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") TELEGRAM_REPORT_CHAT_ID = os.getenv("TELEGRAM_REPORT_CHAT_ID") PHANTOM_PRIVATE_KEY = os.getenv("PHANTOM_PRIVATE_KEY"))
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") TELEGRAM_USER_ID = os.getenv("TELEGRAM_USER_ID") PRIVATE_KEY = os.getenv("PRIVATE_KEY") SOLANA_RPC = os.getenv("SOLANA_RPC", "https://api.mainnet-beta.solana.com")
 
-CONSTANTS
+client = Client(SOLANA_RPC) bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
-NUMBER_OF_BUYS_PER_DAY = 7 JUPITER_SWAP_API = "https://quote-api.jup.ag" SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com" WATCH_CHANNEL = "your_channel_name_here"  # Without @
+Constants
 
-INIT
+DAILY_USD_INVESTMENT = 910 BUY_COUNT = 7 CONGESTION_THRESHOLD_MS = 1500 NORMAL_PRIORITY_FEE = 0.03 HIGH_PRIORITY_FEE = 0.2
 
-client = TelegramClient("anon", TELEGRAM_API_ID, TELEGRAM_API_HASH) solana_client = Client(SOLANA_RPC_URL) wallet = Keypair.from_secret_key(b64decode(PHANTOM_PRIVATE_KEY)) buy_log = [] sell_log = []
+Stats trackers
 
-Get live SOL price
+total_profit = 0 daily_profit = 0 paid_high_priority_today = False
 
-def get_sol_price(): try: response = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd") return response.json()["solana"]["usd"] except: return 180.0  # fallback
+Helper functions
 
-Random daily total in USD between $880-$940
+def get_current_sol_price(): url = "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd" res = requests.get(url) return res.json()["solana"]["usd"]
 
-def get_daily_usd_total(): return round(random.uniform(880, 940), 2)
+def get_priority_fee(): latency = client.get_health() if latency.get("result") != "ok": return HIGH_PRIORITY_FEE, True return NORMAL_PRIORITY_FEE, False
 
-def get_random_usd_amounts(total_usd): chunks = [random.uniform(1, 3) for _ in range(NUMBER_OF_BUYS_PER_DAY)] total = sum(chunks) return [round((amt / total) * total_usd, 2) for amt in chunks]
+def send_report(text): try: bot.send_message(chat_id=TELEGRAM_USER_ID, text=text) except Exception as e: print("Failed to send Telegram message:", e)
 
-Placeholder for token buy via Jupiter
+def generate_random_usd_amounts(total, parts): weights = [random.uniform(0.8, 1.2) for _ in range(parts)] factor = total / sum(weights) return [round(w * factor, 2) for w in weights]
 
-def buy_token(ca, sol_amount): print(f"[BUY] Buying token {ca} with {sol_amount:.4f} SOL") buy_log.append({"token": ca, "sol": sol_amount, "usd": round(sol_amount * get_sol_price(), 2), "time": time.time()})
+def buy_token(contract_address, sol_amount): print(f"[BUY] Token: {contract_address} | Amount: {sol_amount} SOL") # Placeholder - Replace with real Jupiter API integration return True
 
-Simulated 10x profit sell
+def sell_token(contract_address): print(f"[SELL] Token: {contract_address}") # Placeholder - Replace with real Jupiter API integration return True
 
-def check_and_sell(): for b in buy_log: if random.random() < 0.2: sell_log.append({"token": b["token"], "usd_gain": b["usd"] * 10, "usd_spent": b["usd"], "time": time.time()}) print(f"[SELL] Selling {b['token']} for profit")
+def monitor_and_trade(): global daily_profit, total_profit, paid_high_priority_today
 
-Send reports
+daily_profit = 0
+paid_high_priority_today = False
+sol_price = get_current_sol_price()
+daily_amounts_usd = generate_random_usd_amounts(DAILY_USD_INVESTMENT, BUY_COUNT)
+sol_amounts = [round(usd / sol_price, 4) for usd in daily_amounts_usd]
 
-def send_report(msg): url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage" data = {"chat_id": TELEGRAM_REPORT_CHAT_ID, "text": msg, "parse_mode": "Markdown"} requests.post(url, data=data)
+for i in range(BUY_COUNT):
+    contract_address = f"FakeTokenCA_{random.randint(1000,9999)}"  # Mocked extraction
+    priority_fee, high_congestion = get_priority_fee()
 
-def daily_summary(): today = datetime.datetime.utcnow().date() spent = sum(b['usd'] for b in buy_log if datetime.datetime.utcfromtimestamp(b['time']).date() == today) gained = sum(s['usd_gain'] for s in sell_log if datetime.datetime.utcfromtimestamp(s['time']).date() == today) net = gained - spent send_report(f"📊 Daily Report: Spent: ${spent:.2f} Gained: ${gained:.2f} Profit: ${net:.2f}")
+    if high_congestion:
+        paid_high_priority_today = True
 
-def monthly_summary(): now = datetime.datetime.utcnow() spent = sum(b['usd'] for b in buy_log if datetime.datetime.utcfromtimestamp(b['time']).month == now.month) gained = sum(s['usd_gain'] for s in sell_log if datetime.datetime.utcfromtimestamp(s['time']).month == now.month) net = gained - spent send_report(f"📆 Monthly Report: Spent: ${spent:.2f} Gained: ${gained:.2f} Profit: ${net:.2f}")
+    success = buy_token(contract_address, sol_amounts[i])
+    if success:
+        time.sleep(random.randint(5, 10))  # Simulate delay
+        sell_token(contract_address)
+        profit = round(random.uniform(-5, 20), 2)  # Mocked profit
+        daily_profit += profit
+        total_profit += profit
 
-Telegram Listener
+report = f"\n🧾 DAILY REPORT ({datetime.utcnow().strftime('%Y-%m-%d')}):\n"
+report += f"Profit/Loss: ${daily_profit}\n"
+report += f"High Congestion Tipping: {'Yes (0.2 SOL paid)' if paid_high_priority_today else 'No'}\n"
+send_report(report)
 
-@client.on(events.NewMessage(chats=WATCH_CHANNEL)) async def handler(event): msg = event.message.message if "0x" in msg or len(msg) > 35: parts = msg.split() for p in parts: if p.startswith("0x") or len(p) > 35: ca = p.strip() print(f"[SNIPE] Contract address: {ca}") total_usd_today = get_daily_usd_total() usd_values = get_random_usd_amounts(total_usd_today) sol_price = get_sol_price() sol_values = [round(usd / sol_price, 4) for usd in usd_values] for sol_amt in sol_values: buy_token(ca, sol_amt) time.sleep(random.uniform(1, 3))
+def monthly_report(): report = f"\n📅 MONTHLY REPORT ({datetime.utcnow().strftime('%B %Y')}):\n" report += f"Total Profit/Loss: ${total_profit}\n" send_report(report)
 
-Run
+Main loop
 
-print("Sniper bot running...") client.start()
+last_month = datetime.utcnow().month
 
-Schedule daily and monthly reports
+while True: now = datetime.utcnow() monitor_and_trade()
 
-from threading import Thread
+if now.month != last_month:
+    monthly_report()
+    last_month = now.month
 
-def reporting_loop(): while True: now = datetime.datetime.utcnow() if now.hour == 23 and now.minute == 59: daily_summary() if now.day == 1 and now.hour == 0 and now.minute == 5: monthly_summary() time.sleep(60)
-
-Thread(target=reporting_loop, daemon=True).start() client.run_until_disconnected()
+time.sleep(86400)  # Wait until next day
 
