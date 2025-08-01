@@ -1,5 +1,6 @@
+python-dotenv
 requests
-telethon
+telethon==1.34.0
 solana
 base58
-python-dotenv
+jupiter-python
