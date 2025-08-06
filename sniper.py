@@ -15,6 +15,12 @@ from utils import (
     fetch_latest_messages_from_channel
 )
 
+from reports import (
+    record_buy,
+    record_sell,
+    send_daily_report
+)
+
 # Config
 INITIAL_INVESTMENT_USD = 10
 REQUIRED_MULTIPLIER = 2.0
@@ -105,6 +111,7 @@ def run_forever():
 
             print(f"[✓] Bought {contract_address} at {market_cap_at_buy} MC")
             send_telegram_message(f"[BUY] {contract_address}\nMarket Cap: ${market_cap_at_buy:,.0f}\nAmount: ${investment_usd:.2f}")
+            record_buy(contract_address, investment_usd, market_cap_at_buy)
 
             # Wait until price hits 2x MC
             while True:
@@ -120,6 +127,7 @@ def run_forever():
                         last_sell_time = datetime.utcnow()
                         print(f"[✓] Sold {contract_address} at {current_mc} MC")
                         send_telegram_message(f"[SELL] {contract_address}\nMarket Cap: ${current_mc:,.0f}")
+                        record_sell(contract_address, current_mc)
 
                         gross_return = investment_usd * REQUIRED_MULTIPLIER
                         gas_fee = calculate_total_gas_fee(gross_return)
@@ -133,6 +141,9 @@ def run_forever():
 
             current_day_investments += 1
             cycle_investments_done += 1
+
+        # Send daily summary report
+        send_daily_report()
 
         cycle_count += 1
         print(f"[*] Finished day {cycle_count} of cycle. Sleeping until next UTC midnight.")
