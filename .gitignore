@@ -1,58 +1,52 @@
-# 🔐 Environment & Secrets
-.env
-
-# 📈 Logs & Reports
-report_logs.txt
-*.log
-
-# 🧠 Python bytecode & cache
+# Byte-compiled / cache files
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-*.pdb
-*.so
+*$py.class
 
-# 🧪 Testing
-.coverage
-.tox/
-.pytest_cache/
-coverage/
-htmlcov/
+# Logs and debug
+*.log
 
-# 🧰 Build files
-build/
-dist/
-*.egg-info/
-.eggs/
+# Environment variables
+.env
 
-# 💾 Environment folders
-env/
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Virtual environment
 venv/
+ENV/
+env/
 .venv/
 
-# 🛠 Editor & IDE configs
+# IDE files
 .vscode/
 .idea/
-*.swp
-*.swo
 
-# 🍏 macOS system files
-.DS_Store
+# Systemd service files (if not needed in repo)
+*.service
 
-# 🐳 Docker / Runtime
-*.pid
+# Jupiter Aggregator library caches or related files (none needed here, but just in case)
+.jup_cache/
+.jup_logs/
 
-# 📦 Dependency management
-Pipfile.lock
-poetry.lock
+# Reports or output files (optional)
+*.csv
+*.pdf
+*.xlsx
 
-# 🧼 Jupyter Notebook checkpoints (if any)
-.ipynb_checkpoints/
+# PyInstaller
+*.spec
+dist/
+build/
 
-# 🧪 Misc
-logs/
-*.tmp
+# Telethon session files (contains sensitive session data)
+*.session
+*.session-journal
+
+# Backup files
+*~
 *.bak
-*.old
-*.orig
+
+# Compiled shared objects (C extensions)
+*.so
