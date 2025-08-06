@@ -22,7 +22,7 @@ from reports import (
 )
 
 # Config
-INITIAL_INVESTMENT_USD = 10
+INITIAL_INVESTMENT_USD = 11
 REQUIRED_MULTIPLIER = 2.0
 GAS_FEE_PERCENTAGE = 0.009
 CYCLE_INVESTMENTS = [5, 4]  # 5 reinvestments on Day 1, 4 on Day 2
@@ -81,7 +81,7 @@ def run_forever():
         if cycle_count >= len(CYCLE_INVESTMENTS):
             cycle_count = 0
             investment_usd = INITIAL_INVESTMENT_USD
-            print("[*] Resetting investment to $10 and starting new 2-day cycle.")
+            print("[*] Resetting investment to $11 and starting new 2-day cycle.")
 
         daily_limit = CYCLE_INVESTMENTS[cycle_count]
         current_day_investments = 0
