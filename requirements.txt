@@ -1,7 +1,7 @@
 python-dotenv
 requests
+httpx==0.27.0
 telethon==1.34.0
 solana
 base58
-httpx==0.27.0
 jupiter-python
