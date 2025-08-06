@@ -1,0 +1,58 @@
+# 🔐 Environment & Secrets
+.env
+
+# 📈 Logs & Reports
+report_logs.txt
+*.log
+
+# 🧠 Python bytecode & cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+*.so
+
+# 🧪 Testing
+.coverage
+.tox/
+.pytest_cache/
+coverage/
+htmlcov/
+
+# 🧰 Build files
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# 💾 Environment folders
+env/
+venv/
+.venv/
+
+# 🛠 Editor & IDE configs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 🍏 macOS system files
+.DS_Store
+
+# 🐳 Docker / Runtime
+*.pid
+
+# 📦 Dependency management
+Pipfile.lock
+poetry.lock
+
+# 🧼 Jupyter Notebook checkpoints (if any)
+.ipynb_checkpoints/
+
+# 🧪 Misc
+logs/
+*.tmp
+*.bak
+*.old
+*.orig
