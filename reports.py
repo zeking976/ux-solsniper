@@ -4,12 +4,11 @@ import datetime
 import requests
 from dotenv import load_dotenv
 
-# Load environment variables from custom file
+# Load from custom env file
 load_dotenv(dotenv_path="t.env")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
 REPORTS_FILE = "trade_logs.json"
 
 def send_telegram_message(text):
@@ -62,7 +61,7 @@ def send_daily_report():
     if not today_logs:
         send_telegram_message("🗓️ No trades were made today.")
     else:
-        message = "📅 *Daily Report:*\n\n" + generate_report(today_logs)
+        message = "📅 Daily Report:\n\n" + generate_report(today_logs)
         send_telegram_message(message)
 
 def send_monthly_report():
@@ -70,16 +69,15 @@ def send_monthly_report():
     logs = load_logs()
     month_logs = [
         log for log in logs
-        if datetime.datetime.strptime(log.get("date"), "%Y-%m-%d").month == now.month
-        and datetime.datetime.strptime(log.get("date"), "%Y-%m-%d").year == now.year
+        if datetime.datetime.strptime(log.get("date"), "%Y-%m-%d").month == now.month and
+           datetime.datetime.strptime(log.get("date"), "%Y-%m-%d").year == now.year
     ]
     if not month_logs:
         send_telegram_message("🗓️ No trades were made this month.")
     else:
-        message = "📅 *Monthly Report:*\n\n" + generate_report(month_logs)
+        message = "📅 Monthly Report:\n\n" + generate_report(month_logs)
         send_telegram_message(message)
 
-# Entry point
 if __name__ == "__main__":
     mode = os.getenv("REPORT_MODE", "daily").lower()
     if mode == "daily":
