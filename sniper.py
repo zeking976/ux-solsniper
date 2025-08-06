@@ -1,81 +1,102 @@
-import os import time import random import traceback from datetime import datetime, timedelta from dotenv import load_dotenv from utils import ( get_realtime_sol_price, get_priority_fee, get_contract_from_telegram, jupiter_buy, jupiter_sell, get_token_marketcap, get_token_name, is_congested ) from report import send_telegram_message
+import os import time import random import math from datetime import datetime, timedelta from dotenv import load_dotenv from utils import get_market_cap_from_dexscreener, get_sol_price_usd, calculate_total_gas_fee, send_telegram_message
+
+--- Load Environment Variables ---
 
 load_dotenv()
 
-STARTING_USD = 55 GAS_FEE_PERCENT = 0.009 UTC_NOW = lambda: datetime.utcnow()
+--- Constants ---
 
-TOTAL_DAYS = 7 GOAL_AMOUNT = 10000
+INITIAL_INVESTMENT_USD = 55 REQUIRED_MULTIPLIER = 2.0 TOTAL_DAYS = 30 GAS_FEE_PERCENTAGE = 0.009
 
-def calculate_daily_reinvestments(starting_amount, goal, days, gas_fee_percent): reinvestments = [] current = starting_amount for _ in range(days): gas_fee = current * gas_fee_percent reinvest = (current * 2) - gas_fee  # 2x returns reinvestments.append(current) current = reinvest return reinvestments
+--- Globals ---
 
-def wait_until_midnight(): now = UTC_NOW() tomorrow = datetime.combine(now.date() + timedelta(days=1), datetime.min.time()) delta = (tomorrow - now).total_seconds() print(f"[SLEEP] Sleeping for {delta / 3600:.2f} hours until next 00:00 UTC") time.sleep(delta)
+investment_usd = INITIAL_INVESTMENT_USD start_day = datetime.utcnow().date()
 
-def main(): reinvest_plan = calculate_daily_reinvestments(STARTING_USD, GOAL_AMOUNT, TOTAL_DAYS, GAS_FEE_PERCENT)
+--- Placeholder Buy Function (Implement Real Logic) ---
 
-for day, invest_usd in enumerate(reinvest_plan, 1):
-    try:
-        print(f"\n[DAY {day}] Starting new cycle at {UTC_NOW()} with ${invest_usd:.2f}")
+def buy_token(contract_address, amount_sol): print(f"[+] Buying token {contract_address} with {amount_sol:.4f} SOL") return True
 
-        # Convert USD to SOL
-        sol_price = get_realtime_sol_price()
-        invest_sol = invest_usd / sol_price
+--- Placeholder Sell Function (Implement Real Logic) ---
 
-        # Priority fee
-        congested = is_congested()
-        priority_fee = get_priority_fee(congested)
+def sell_token(contract_address): print(f"[+] Selling token {contract_address}") return True
 
-        # Get contract from Telegram
-        contract_address = get_contract_from_telegram()
-        token_name = get_token_name(contract_address)
-        buy_marketcap = get_token_marketcap(contract_address)
+--- Convert USD to SOL ---
 
-        # Buy token
-        print(f"[BUY] Attempting to buy {token_name} at market cap ${buy_marketcap:.2f}")
-        buy_time = UTC_NOW()
-        buy_success = jupiter_buy(contract_address, invest_sol, priority_fee)
-        while not buy_success:
-            time.sleep(10)
-            buy_success = jupiter_buy(contract_address, invest_sol, priority_fee)
+def convert_usd_to_sol(usd): sol_price = get_sol_price_usd() if sol_price: return usd / sol_price else: print("[!] Cannot convert USD to SOL: No SOL price") return None
 
-        # Wait for target market cap
-        target_cap = buy_marketcap * 2
-        print(f"[WAIT] Waiting for {token_name} to reach ${target_cap:.2f} market cap")
+--- Main Trading Cycle ---
 
-        sell_success = False
-        interval = 30
-        while not sell_success:
-            current_cap = get_token_marketcap(contract_address)
-            if current_cap >= target_cap:
-                print(f"[SELL] Selling at market cap ${current_cap:.2f}")
-                sell_success = jupiter_sell(contract_address, priority_fee)
-                while not sell_success:
-                    time.sleep(10)
-                    sell_success = jupiter_sell(contract_address, priority_fee)
-                break
-            time.sleep(interval)
+def run_trading_cycle(): global investment_usd
 
-        sell_time = UTC_NOW()
-        duration = (sell_time - buy_time).total_seconds()
-        seconds_until_midnight = max(0, 86400 - duration)
-        print(f"[SLEEP] Sleeping for {seconds_until_midnight / 3600:.2f} hours until next cycle")
-        send_telegram_message(
-            f"\ud83d\udcc8 *Cycle Report Day {day}*\n"
-            f"Token: `{token_name}`\n"
-            f"Buy Cap: ${buy_marketcap:.2f}\n"
-            f"Target Sell Cap: ${target_cap:.2f}\n"
-            f"Buy Time: {buy_time.strftime('%H:%M:%S')} UTC\n"
-            f"Sell Time: {sell_time.strftime('%H:%M:%S')} UTC\n"
-            f"Duration: {duration / 60:.1f} minutes\n"
-            f"Used Priority Fee: {priority_fee} SOL\n"
-        )
+for day in range(1, TOTAL_DAYS + 1):
+    print(f"\n=== Day {day} | UTC: {datetime.utcnow()} ===")
 
-        time.sleep(seconds_until_midnight)
+    contract_address = get_contract_address_from_telegram()
+    if not contract_address:
+        print("[!] No contract address found. Retrying in 10 min...")
+        time.sleep(600)
+        continue
 
-    except Exception as e:
-        error = traceback.format_exc()
-        print(f"[ERROR] {error}")
-        send_telegram_message(f"❌ Bot crashed on day {day}:\n```{error}```")
-        wait_until_midnight()
+    # Get market cap at buy time
+    market_cap_at_buy = get_market_cap_from_dexscreener(contract_address)
+    if not market_cap_at_buy:
+        print("[!] Could not fetch market cap. Skipping token.")
+        continue
 
-if name == "main": main()
+    amount_sol = convert_usd_to_sol(investment_usd)
+    if not amount_sol:
+        print("[!] Could not convert USD to SOL. Skipping token.")
+        continue
+
+    buy_success = buy_token(contract_address, amount_sol)
+    if not buy_success:
+        print("[!] Buy failed. Skipping token.")
+        continue
+
+    print(f"[✓] Bought {contract_address} at {market_cap_at_buy} MC")
+    send_telegram_message(f"[BUY] {contract_address}\nMarket Cap: ${market_cap_at_buy:,.0f}\nAmount: {investment_usd:.2f} USD")
+
+    # Wait for target market cap to hit
+    while True:
+        current_mc = get_market_cap_from_dexscreener(contract_address)
+        if not current_mc:
+            print("[!] Market cap unavailable. Retrying in 2 min...")
+            time.sleep(120)
+            continue
+
+        print(f"[i] Waiting... Current MC: {current_mc:.0f} | Target: {market_cap_at_buy * REQUIRED_MULTIPLIER:.0f}")
+        if current_mc >= market_cap_at_buy * REQUIRED_MULTIPLIER:
+            sell_success = sell_token(contract_address)
+            if sell_success:
+                print(f"[✓] Sold {contract_address} at {current_mc} MC")
+                send_telegram_message(f"[SELL] {contract_address}\nMarket Cap: ${current_mc:,.0f}")
+
+                # Calculate new investment after subtracting gas
+                gross_return = investment_usd * REQUIRED_MULTIPLIER
+                gas_fee = calculate_total_gas_fee(gross_return)
+                investment_usd = round(gross_return - gas_fee, 2)
+                print(f"[✓] New Investment Capital: ${investment_usd:.2f} after gas ${gas_fee:.2f}")
+            else:
+                print("[!] Sell failed. Retrying in 5 min...")
+                time.sleep(300)
+                continue
+            break
+        time.sleep(120)
+
+    # Sleep until 00:00 UTC the next day
+    now = datetime.utcnow()
+    tomorrow = now + timedelta(days=1)
+    midnight = datetime.combine(tomorrow.date(), datetime.min.time())
+    sleep_duration = (midnight - now).total_seconds()
+    print(f"[*] Sleeping {sleep_duration / 3600:.2f} hours until next cycle...\n")
+    time.sleep(sleep_duration)
+
+--- Simulate Getting Contract Address ---
+
+def get_contract_address_from_telegram(): try: # Replace this logic with actual Telegram scraping dummy_addresses = [ "6TgL7cywVZP1zFjkpHMGgf6kYE3tAEBjVJVu6QQAGvWb", "9skSh2vG9ZaFVZT38aThAYGVx4GZtYZ3rEZ2ULXYtK9T", "J7kLGdXh8LmD4PvTfDSaAqQxsvbULv59Bzv4obBFQz9P" ] return random.choice(dummy_addresses) except Exception as e: print(f"[!] Error fetching contract address: {e}") return None
+
+--- Run Bot ---
+
+if name == "main": try: run_trading_cycle() except Exception as e: print(f"[FATAL] Uncaught error in sniper bot: {e}") send_telegram_message(f"[ERROR] Sniper crashed: {e}")
+
 
