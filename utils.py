@@ -40,3 +40,7 @@ def is_ca_processed(ca): if not os.path.exists("processed_ca.txt"): return False
 
 def clear_processed_ca(): open("processed_ca.txt", "w").close()
 
+--- Check CA was posted after last sell timestamp ---
+
+def is_ca_posted_after_sell(ca_timestamp, last_sell_timestamp): return ca_timestamp > last_sell_timestamp
+
