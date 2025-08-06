@@ -4,7 +4,8 @@ import math
 from dotenv import load_dotenv
 from telethon.sync import TelegramClient
 
-load_dotenv()
+# Load environment variables from a custom .env file (e.g., t.env)
+load_dotenv(dotenv_path="t.env")
 
 # --- Safe Environment Variable Retrieval ---
 def get_env_variable(key, required=True, default=None):
@@ -16,7 +17,6 @@ def get_env_variable(key, required=True, default=None):
 # --- Get SOL Price from Jupiter or fallback to CoinGecko ---
 def get_sol_price_usd():
     try:
-        # Try Jupiter first
         response = requests.get("https://price.jup.ag/v4/price?ids=SOL", timeout=10)
         response.raise_for_status()
         data = response.json()
@@ -24,7 +24,6 @@ def get_sol_price_usd():
     except Exception as jupiter_error:
         print(f"[!] Jupiter API failed: {jupiter_error}")
         try:
-            # Fallback to CoinGecko
             response = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd", timeout=10)
             response.raise_for_status()
             data = response.json()
@@ -57,7 +56,7 @@ def get_market_cap_from_dexscreener(contract_address):
         print(f"[!] Error fetching market cap: {e}")
         return None
 
-# --- Telegram Messaging (Optional) ---
+# --- Telegram Messaging ---
 def send_telegram_message(text):
     try:
         api_id = int(get_env_variable("TELEGRAM_API_ID"))
@@ -67,3 +66,7 @@ def send_telegram_message(text):
             client.send_message(chat_id, text)
     except Exception as e:
         print(f"[!] Error sending Telegram message: {e}")
+
+# --- Extra Math Utility (Example: Round to nearest 5) ---
+def round_to_nearest_5(value):
+    return int(5 * round(float(value) / 5))
