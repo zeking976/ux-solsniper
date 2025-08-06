@@ -1,8 +1,22 @@
-import os import time import random import math import re from datetime import datetime, timedelta from dotenv import load_dotenv from utils import ( get_market_cap_from_dexscreener, get_sol_price_usd, calculate_total_gas_fee, send_telegram_message, fetch_latest_messages_from_channel )
+import os
+import time
+import random
+import math
+import re
+from datetime import datetime, timedelta
 
-load_dotenv()
+from dotenv import load_dotenv
+load_dotenv(dotenv_path="t.env")  # Load your custom env file
 
-Constants
+from utils import (
+    get_market_cap_from_dexscreener,
+    get_sol_price_usd,
+    calculate_total_gas_fee,
+    send_telegram_message,
+    fetch_latest_messages_from_channel
+)
+
+# Constants
 
 INITIAL_INVESTMENT_USD = 55 REQUIRED_MULTIPLIER = 2.0 TOTAL_DAYS = 30 GAS_FEE_PERCENTAGE = 0.009
 
