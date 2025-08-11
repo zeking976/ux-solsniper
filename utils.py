@@ -116,7 +116,7 @@ def clear_processed_ca():
     open("processed_ca.txt", "w").close()
 
 # --- Jupiter Buy ---
-def jupiter_buy_token(ca, amount_sol):
+def jupiter_buy(ca, amount_sol):
     try:
         print(f"[BUY] Jupiter swap for {ca} with {amount_sol} SOL...")
         swap_url = f"{get_env_variable('JUPITER_API')}/swap"
@@ -139,7 +139,7 @@ def jupiter_buy_token(ca, amount_sol):
         return False
 
 # --- Jupiter Sell ---
-def jupiter_sell_token(ca):
+def jupiter_sell(ca):
     try:
         print(f"[SELL] Jupiter swap from {ca} to SOL...")
         swap_url = f"{get_env_variable('JUPITER_API')}/swap"
@@ -163,5 +163,5 @@ def jupiter_sell_token(ca):
 
 # --- Placeholder for balance fetch ---
 def get_token_balance_lamports(ca):
-    # TODO: Replace with actual RPC call
+    # TODO: Replace with actual RPC call to get token balance in lamports
     return 1_000_000  # Replace with actual lamports
