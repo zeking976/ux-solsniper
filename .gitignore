@@ -3,30 +3,31 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Logs and debug
+# Logs and debug files
 *.log
 
 # Environment variables
 .env
+t.env
 
-# OS-specific
+# OS-specific files
 .DS_Store
 Thumbs.db
 
-# Virtual environment
+# Virtual environments
 venv/
 ENV/
 env/
 .venv/
 
-# IDE files
+# IDE config folders
 .vscode/
 .idea/
 
-# Systemd service files (if not needed in repo)
+# Systemd service files (if not tracked)
 *.service
 
-# Jupiter Aggregator library caches or related files (none needed here, but just in case)
+# Jupiter Aggregator library caches or logs (precautionary)
 .jup_cache/
 .jup_logs/
 
@@ -35,16 +36,16 @@ env/
 *.pdf
 *.xlsx
 
-# PyInstaller
+# PyInstaller build files
 *.spec
 dist/
 build/
 
-# Telethon session files (contains sensitive session data)
+# Telethon session files (sensitive!)
 *.session
 *.session-journal
 
-# Backup files
+# Backup and temp files
 *~
 *.bak
 
