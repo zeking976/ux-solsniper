@@ -3,19 +3,16 @@ import requests
 from dotenv import load_dotenv
 from telethon.sync import TelegramClient
 
-# Load environment variables from t.env
 load_dotenv(dotenv_path="t.env")
 
-# --- Safe Environment Variable Retrieval ---
 def get_env_variable(key, required=True, default=None):
     value = os.getenv(key, default)
-    if required and value is None:
+    if required and (value is None or value == ""):
         raise EnvironmentError(f"[!] Missing required environment variable: {key}")
     return value
 
-# --- Get SOL Price from Jupiter or fallback to CoinGecko ---
 def get_sol_price_usd():
-    jupiter_price_api = get_env_variable("JUPITER_API", required=False, default="https://price.jup.ag/v4/price")
+    jupiter_price_api = get_env_variable("JUPITER_PRICE_API", required=False, default="https://price.jup.ag/v4/price")
     coingecko_api_key = get_env_variable("COINGECKO_API_KEY", required=False)
 
     try:
@@ -41,7 +38,6 @@ def get_sol_price_usd():
             print(f"[!] CoinGecko fallback also failed: {cg_error}")
             return 0
 
-# --- Gas Fee Calculation (0.9% + priority fee) ---
 def calculate_total_gas_fee(amount_in_usd, congestion=False):
     base_fee = amount_in_usd * 0.009
     priority_fee_sol = 0.3 if congestion else 0.03
@@ -52,7 +48,6 @@ def calculate_total_gas_fee(amount_in_usd, congestion=False):
     priority_fee_usd = priority_fee_sol * sol_price
     return round(base_fee + priority_fee_usd, 4)
 
-# --- Market Cap from Dexscreener ---
 def get_market_cap_from_dexscreener(contract_address):
     dexscreener_api_key = get_env_variable("DEXSCREENER_API_KEY", required=False)
     try:
@@ -63,23 +58,26 @@ def get_market_cap_from_dexscreener(contract_address):
         response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
         data = response.json()
-        return float(data['pair']['fdv']) if 'pair' in data else None
+        if 'pair' in data and 'fdv' in data['pair']:
+            return float(data['pair']['fdv'])
+        else:
+            print("[!] Dexscreener response missing 'fdv' field.")
+            return None
     except Exception as e:
         print(f"[!] Error fetching market cap: {e}")
         return None
 
-# --- Telegram Messaging ---
 def send_telegram_message(text):
     try:
         bot_token = get_env_variable("TELEGRAM_BOT_TOKEN")
         chat_id = int(get_env_variable("TELEGRAM_CHAT_ID"))
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         payload = {"chat_id": chat_id, "text": text}
-        requests.post(url, json=payload, timeout=10)
+        resp = requests.post(url, json=payload, timeout=10)
+        resp.raise_for_status()
     except Exception as e:
         print(f"[!] Error sending Telegram message: {e}")
 
-# --- Read messages from target channel ---
 def read_from_target_channel(limit=10):
     try:
         api_id = int(get_env_variable("TELEGRAM_API_ID"))
@@ -92,7 +90,6 @@ def read_from_target_channel(limit=10):
         print(f"[!] Error reading from target channel: {e}")
         return []
 
-# --- SOL amount for given USD ---
 def get_sol_amount_for_usd(usd_amount):
     sol_price = get_sol_price_usd()
     if sol_price == 0:
@@ -100,67 +97,95 @@ def get_sol_amount_for_usd(usd_amount):
         return 0
     return round(usd_amount / sol_price, 5)
 
-# --- Track Processed Contract Addresses ---
 def save_processed_ca(ca):
-    with open("processed_ca.txt", "a") as f:
-        f.write(f"{ca}\n")
+    try:
+        with open("processed_ca.txt", "a") as f:
+            f.write(f"{ca}\n")
+    except Exception as e:
+        print(f"[!] Error saving processed CA: {e}")
 
 def is_ca_processed(ca):
-    if not os.path.exists("processed_ca.txt"):
+    try:
+        if not os.path.exists("processed_ca.txt"):
+            return False
+        with open("processed_ca.txt", "r") as f:
+            return ca in f.read()
+    except Exception as e:
+        print(f"[!] Error checking processed CA: {e}")
         return False
-    with open("processed_ca.txt", "r") as f:
-        return ca in f.read()
 
 def clear_processed_ca():
-    open("processed_ca.txt", "w").close()
+    try:
+        open("processed_ca.txt", "w").close()
+    except Exception as e:
+        print(f"[!] Error clearing processed CA file: {e}")
 
-# --- Jupiter Buy ---
 def jupiter_buy(ca, amount_sol):
     try:
         print(f"[BUY] Jupiter swap for {ca} with {amount_sol} SOL...")
-        swap_url = f"{get_env_variable('JUPITER_API')}/swap"
+        swap_url = get_env_variable("JUPITER_SWAP_API")
         payload = {
-            "inputMint": "So11111111111111111111111111111111111111112",  # SOL
+            "inputMint": "So11111111111111111111111111111111111111112",  # SOL mint
             "outputMint": ca,
             "amount": int(amount_sol * 1e9),  # lamports
             "slippageBps": 50,
-            "userPublicKey": get_env_variable("PRIVATE_KEY"),
+            "userPublicKey": get_env_variable("PUBLIC_KEY"),
         }
-        resp = requests.post(swap_url, json=payload)
-        if resp.status_code == 200:
-            print("[✓] Jupiter buy transaction sent.")
-            return True
-        else:
-            print(f"[!] Jupiter buy failed: {resp.text}")
-            return False
+        resp = requests.post(swap_url, json=payload, timeout=15)
+        resp.raise_for_status()
+        print("[✓] Jupiter buy transaction sent.")
+        return True
     except Exception as e:
         print(f"[!] Jupiter buy error: {e}")
         return False
 
-# --- Jupiter Sell ---
 def jupiter_sell(ca):
     try:
         print(f"[SELL] Jupiter swap from {ca} to SOL...")
-        swap_url = f"{get_env_variable('JUPITER_API')}/swap"
+        swap_url = get_env_variable("JUPITER_SWAP_API")
+        amount_lamports = get_token_balance_lamports(ca)
+        if amount_lamports == 0:
+            print(f"[!] No token balance for {ca}, skipping sell.")
+            return False
         payload = {
             "inputMint": ca,
-            "outputMint": "So11111111111111111111111111111111111111112",  # SOL
-            "amount": get_token_balance_lamports(ca),
+            "outputMint": "So11111111111111111111111111111111111111112",  # SOL mint
+            "amount": amount_lamports,
             "slippageBps": 50,
-            "userPublicKey": get_env_variable("PRIVATE_KEY"),
+            "userPublicKey": get_env_variable("PUBLIC_KEY"),
         }
-        resp = requests.post(swap_url, json=payload)
-        if resp.status_code == 200:
-            print("[✓] Jupiter sell transaction sent.")
-            return True
-        else:
-            print(f"[!] Jupiter sell failed: {resp.text}")
-            return False
+        resp = requests.post(swap_url, json=payload, timeout=15)
+        resp.raise_for_status()
+        print("[✓] Jupiter sell transaction sent.")
+        return True
     except Exception as e:
         print(f"[!] Jupiter sell error: {e}")
         return False
 
-# --- Placeholder for balance fetch ---
-def get_token_balance_lamports(ca):
-    # TODO: Replace with actual RPC call to get token balance in lamports
-    return 1_000_000  # Replace with actual lamports
+def get_token_balance_lamports(token_mint):
+    rpc_url = get_env_variable("SOLANA_RPC")
+    public_key = get_env_variable("PUBLIC_KEY")
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getTokenAccountsByOwner",
+        "params": [
+            public_key,
+            {"mint": token_mint},
+            {"encoding": "jsonParsed"}
+        ]
+    }
+    try:
+        response = requests.post(rpc_url, json=payload, timeout=10)
+        response.raise_for_status()
+        result = response.json()
+        accounts = result.get("result", {}).get("value", [])
+        total_balance = 0
+        for acc in accounts:
+            amount_str = acc.get("account", {}).get("data", {}).get("parsed", {}).get("info", {}).get("tokenAmount", {}).get("amount", "0")
+            total_balance += int(amount_str)
+        return total_balance
+    except Exception as e:
+        print(f"[!] Error fetching token balance: {e}")
+        return 0
