@@ -4,14 +4,19 @@ import datetime
 import requests
 from dotenv import load_dotenv
 
-# Load from custom env file
+# Load env from your env file (t.env)
 load_dotenv(dotenv_path="t.env")
 
+# Env vars aligned with your .env format
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 REPORTS_FILE = "trade_logs.json"
 
 def send_telegram_message(text):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("[!] Missing Telegram bot token or chat ID.")
+        return
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -19,7 +24,9 @@ def send_telegram_message(text):
         "parse_mode": "Markdown"
     }
     try:
-        requests.post(url, json=payload)
+        response = requests.post(url, json=payload)
+        if not response.ok:
+            print(f"[!] Telegram API Error: {response.text}")
     except Exception as e:
         print(f"[!] Failed to send message: {e}")
 
@@ -29,13 +36,16 @@ def load_logs():
             json.dump([], f)
         return []
     with open(REPORTS_FILE, "r") as f:
-        return json.load(f)
+        try:
+            return json.load(f)
+        except json.JSONDecodeError:
+            print("[!] Corrupt logs file. Starting fresh.")
+            return []
 
 def save_logs(logs):
     with open(REPORTS_FILE, "w") as f:
         json.dump(logs, f, indent=4)
 
-# Record a new buy
 def record_buy(token, coin_name, buy_market_cap, buy_time, amount_usd, priority_fee):
     logs = load_logs()
     logs.append({
@@ -52,21 +62,22 @@ def record_buy(token, coin_name, buy_market_cap, buy_time, amount_usd, priority_
     })
     save_logs(logs)
 
-# Record sell for the most recent matching buy entry
 def record_sell(token, sell_market_cap, sell_time, profit_usd):
     logs = load_logs()
+    # Find latest unmatched buy for this token
     for entry in reversed(logs):
         if entry["token"] == token and entry["sell_time"] is None:
             entry["sell_market_cap"] = sell_market_cap
             entry["sell_time"] = sell_time
             entry["profit_usd"] = profit_usd
             break
+    else:
+        print(f"[!] No matching buy found to record sell for token: {token}")
     save_logs(logs)
 
-# Daily / Monthly report logic
 def generate_report(logs):
-    report = ""
     total_profit = 0
+    report_lines = []
     for entry in logs:
         buy_time = entry.get("buy_time", "N/A")
         sell_time = entry.get("sell_time", "N/A")
@@ -78,16 +89,17 @@ def generate_report(logs):
         priority_fee = entry.get("priority_fee", "N/A")
 
         total_profit += float(profit) if profit else 0
-        report += (
+
+        report_lines.append(
             f"🔹 *{name}*\n"
             f"CA: `{token}`\n"
             f"🟢 Buy: {buy_time} (${buy_cap})\n"
             f"🔴 Sell: {sell_time} (${sell_cap})\n"
             f"💰 Profit: ${profit}\n"
-            f"⚡ Fee: {priority_fee} SOL\n\n"
+            f"⚡ Fee: {priority_fee} SOL\n"
         )
-    report += f"\n📊 *Total Profit:* ${round(total_profit, 2)}"
-    return report
+    report_lines.append(f"\n📊 *Total Profit:* ${round(total_profit, 2)}")
+    return "\n".join(report_lines)
 
 def send_daily_report():
     today = datetime.datetime.utcnow().date()
@@ -120,4 +132,4 @@ if __name__ == "__main__":
     elif mode == "monthly":
         send_monthly_report()
     else:
-        print("Invalid REPORT_MODE. Use 'daily' or 'monthly'.")
+        print("[!] Invalid REPORT_MODE in env. Use 'daily' or 'monthly'.")
