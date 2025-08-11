@@ -1,6 +1,5 @@
 import os
 import requests
-import math
 from dotenv import load_dotenv
 from telethon.sync import TelegramClient
 
@@ -16,7 +15,7 @@ def get_env_variable(key, required=True, default=None):
 
 # --- Get SOL Price from Jupiter or fallback to CoinGecko ---
 def get_sol_price_usd():
-    jupiter_price_api = get_env_variable("JUPITER_PRICE_API", required=False, default="https://price.jup.ag/v4/price")
+    jupiter_price_api = get_env_variable("JUPITER_API", required=False, default="https://price.jup.ag/v4/price")
     coingecko_api_key = get_env_variable("COINGECKO_API_KEY", required=False)
 
     try:
@@ -125,7 +124,7 @@ def jupiter_buy(ca, amount_sol):
             "outputMint": ca,
             "amount": int(amount_sol * 1e9),  # lamports
             "slippageBps": 50,
-            "userPublicKey": get_env_variable("PUBLIC_KEY"),
+            "userPublicKey": get_env_variable("PRIVATE_KEY"),
         }
         resp = requests.post(swap_url, json=payload)
         if resp.status_code == 200:
@@ -148,7 +147,7 @@ def jupiter_sell(ca):
             "outputMint": "So11111111111111111111111111111111111111112",  # SOL
             "amount": get_token_balance_lamports(ca),
             "slippageBps": 50,
-            "userPublicKey": get_env_variable("PUBLIC_KEY"),
+            "userPublicKey": get_env_variable("PRIVATE_KEY"),
         }
         resp = requests.post(swap_url, json=payload)
         if resp.status_code == 200:
