@@ -20,7 +20,6 @@ def get_sol_price_usd():
     coingecko_api_key = get_env_variable("COINGECKO_API_KEY", required=False)
 
     try:
-        # Jupiter Aggregator Price
         response = requests.get(f"{jupiter_price_api}?ids=SOL", timeout=10)
         response.raise_for_status()
         data = response.json()
@@ -30,7 +29,6 @@ def get_sol_price_usd():
     except Exception as jupiter_error:
         print(f"[!] Jupiter API failed: {jupiter_error}")
 
-        # CoinGecko Fallback
         try:
             cg_url = "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd"
             headers = {}
@@ -74,8 +72,6 @@ def get_market_cap_from_dexscreener(contract_address):
 # --- Telegram Messaging ---
 def send_telegram_message(text):
     try:
-        api_id = int(get_env_variable("TELEGRAM_API_ID"))
-        api_hash = get_env_variable("TELEGRAM_API_HASH")
         bot_token = get_env_variable("TELEGRAM_BOT_TOKEN")
         chat_id = int(get_env_variable("TELEGRAM_CHAT_ID"))
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -119,6 +115,53 @@ def is_ca_processed(ca):
 def clear_processed_ca():
     open("processed_ca.txt", "w").close()
 
-# --- Check if CA was posted after last sell timestamp ---
-def is_ca_posted_after_sell(ca_timestamp, last_sell_timestamp):
-    return ca_timestamp > last_sell_timestamp
+# --- Jupiter Buy ---
+def jupiter_buy_token(ca, amount_sol):
+    try:
+        print(f"[BUY] Jupiter swap for {ca} with {amount_sol} SOL...")
+        swap_url = f"{get_env_variable('JUPITER_API')}/swap"
+        payload = {
+            "inputMint": "So11111111111111111111111111111111111111112",  # SOL
+            "outputMint": ca,
+            "amount": int(amount_sol * 1e9),  # lamports
+            "slippageBps": 50,
+            "userPublicKey": get_env_variable("PUBLIC_KEY"),
+        }
+        resp = requests.post(swap_url, json=payload)
+        if resp.status_code == 200:
+            print("[✓] Jupiter buy transaction sent.")
+            return True
+        else:
+            print(f"[!] Jupiter buy failed: {resp.text}")
+            return False
+    except Exception as e:
+        print(f"[!] Jupiter buy error: {e}")
+        return False
+
+# --- Jupiter Sell ---
+def jupiter_sell_token(ca):
+    try:
+        print(f"[SELL] Jupiter swap from {ca} to SOL...")
+        swap_url = f"{get_env_variable('JUPITER_API')}/swap"
+        payload = {
+            "inputMint": ca,
+            "outputMint": "So11111111111111111111111111111111111111112",  # SOL
+            "amount": get_token_balance_lamports(ca),
+            "slippageBps": 50,
+            "userPublicKey": get_env_variable("PUBLIC_KEY"),
+        }
+        resp = requests.post(swap_url, json=payload)
+        if resp.status_code == 200:
+            print("[✓] Jupiter sell transaction sent.")
+            return True
+        else:
+            print(f"[!] Jupiter sell failed: {resp.text}")
+            return False
+    except Exception as e:
+        print(f"[!] Jupiter sell error: {e}")
+        return False
+
+# --- Placeholder for balance fetch ---
+def get_token_balance_lamports(ca):
+    # TODO: Replace with actual RPC call
+    return 1_000_000  # Replace with actual lamports
