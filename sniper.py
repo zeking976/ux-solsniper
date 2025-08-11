@@ -18,7 +18,11 @@ PRIVATE_KEY = get_env_variable("PRIVATE_KEY")
 SOLANA_RPC = get_env_variable("SOLANA_RPC")
 INVESTMENT_USD = float(get_env_variable("INVESTMENT_USD"))
 REQUIRED_MULTIPLIER = float(get_env_variable("REQUIRED_MULTIPLIER"))
-DAILY_LIMIT = int(get_env_variable("DAILY_LIMIT"))
+
+# Parse daily limits as list of ints from env var "DAILY_LIMITS"
+daily_limits_str = get_env_variable("DAILY_LIMITS")  # e.g. "5,4"
+DAILY_LIMITS = [int(x.strip()) for x in daily_limits_str.split(",")]
+
 CYCLE_LIMIT = int(get_env_variable("CYCLE_LIMIT"))
 
 # --- Main Sniping Logic ---
@@ -26,9 +30,12 @@ cycle_count = 0
 capital_usd = INVESTMENT_USD
 
 while cycle_count < CYCLE_LIMIT:
+    # Get the daily limit for this cycle day, fallback to last value if out of range
+    daily_limit = DAILY_LIMITS[cycle_count] if cycle_count < len(DAILY_LIMITS) else DAILY_LIMITS[-1]
+
     current_day_investments = 0
 
-    while current_day_investments < DAILY_LIMIT:
+    while current_day_investments < daily_limit:
         # Get a fresh contract address from Telegram target channel
         while True:
             messages = read_from_target_channel(limit=5)
