@@ -11,12 +11,10 @@ from utils import (
     read_from_target_channel,
     jupiter_buy,
     jupiter_sell,
-    get_current_daily_limit  # This function handles daily limit cycling
+    get_current_daily_limit  # This reads DAILY_LIMIT from env and cycles through it
 )
 
-# ========================
-# LOAD ENVIRONMENT VARIABLES
-# ========================
+# Load env variables
 try:
     PRIVATE_KEY = get_env_variable("PRIVATE_KEY")
     SOLANA_RPC = get_env_variable("SOLANA_RPC")
