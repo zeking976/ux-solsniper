@@ -29,11 +29,10 @@ def is_valid_solana_address(address):
         return False
 
 # -------------------------
-# SOL PRICE FETCHING (Jupiter, fallback CoinGecko)
+# SOL PRICE FETCHING (Only Jupiter, no CoinGecko fallback)
 # -------------------------
 def get_sol_price_usd():
     jupiter_price_api = get_env_variable("JUPITER_PRICE_API", required=False, default="https://price.jup.ag/v4/price")
-    coingecko_api_key = get_env_variable("COINGECKO_API_KEY", required=False)
 
     try:
         resp = requests.get(f"{jupiter_price_api}?ids=SOL", timeout=10)
@@ -44,18 +43,7 @@ def get_sol_price_usd():
         raise ValueError("Invalid Jupiter API response")
     except Exception as jupiter_error:
         print(f"[!] Jupiter API failed: {jupiter_error}")
-        try:
-            cg_url = "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd"
-            headers = {}
-            if coingecko_api_key:
-                headers["x-cg-pro-api-key"] = coingecko_api_key
-            resp = requests.get(cg_url, headers=headers, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-            return float(data['solana']['usd'])
-        except Exception as cg_error:
-            print(f"[!] CoinGecko fallback failed: {cg_error}")
-            return 0
+        return 0
 
 # -------------------------
 # GAS FEE CALCULATION
@@ -70,27 +58,52 @@ def calculate_total_gas_fee(amount_in_usd, congestion=False):
     return round(base_fee + (priority_fee_sol * sol_price), 4)
 
 # -------------------------
-# DEXSCREENER MARKET CAP FETCH
+# DEXSCREENER MARKET CAP FETCH with retries and Birdeye fallback
 # -------------------------
-def get_market_cap_from_dexscreener(contract_address):
-    dexscreener_api_key = get_env_variable("DEXSCREENER_API_KEY", required=False)
+def get_market_cap_from_birdeye(contract_address):
     try:
-        url = f"https://api.dexscreener.io/latest/dex/pairs/solana/{contract_address}"
-        headers = {}
-        if dexscreener_api_key:
-            headers["Authorization"] = f"Bearer {dexscreener_api_key}"
+        url = f"https://public-api.birdeye.so/defi/price?address={contract_address}"
+        headers = {"accept": "application/json"}  # No API key header
         resp = requests.get(url, headers=headers, timeout=10)
         resp.raise_for_status()
         data = resp.json()
-        if "pairs" in data and len(data["pairs"]) > 0 and "fdv" in data["pairs"][0]:
-            return float(data["pairs"][0]["fdv"])
-        elif "pair" in data and "fdv" in data["pair"]:
-            return float(data["pair"]["fdv"])
-        print("[!] Dexscreener: FDV not found in response.")
+        # Birdeye response structure may vary; try to extract market cap (fdv)
+        if "fdv" in data:
+            return float(data["fdv"])
+        elif "price" in data and "marketCap" in data:
+            # Sometimes it could be under marketCap or calculated
+            return float(data.get("marketCap", 0))
+        print("[!] Birdeye: FDV/MarketCap not found in response.")
         return None
     except Exception as e:
-        print(f"[!] Dexscreener fetch error: {e}")
+        print(f"[!] Birdeye fetch error: {e}")
         return None
+
+def get_market_cap_from_dexscreener(contract_address, max_retries=3):
+    dexscreener_api_key = get_env_variable("DEXSCREENER_API_KEY", required=False)
+    retries = 0
+    while retries < max_retries:
+        try:
+            url = f"https://api.dexscreener.io/latest/dex/pairs/solana/{contract_address}"
+            headers = {}
+            if dexscreener_api_key:
+                headers["Authorization"] = f"Bearer {dexscreener_api_key}"
+            resp = requests.get(url, headers=headers, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            if "pairs" in data and len(data["pairs"]) > 0 and "fdv" in data["pairs"][0]:
+                return float(data["pairs"][0]["fdv"])
+            elif "pair" in data and "fdv" in data["pair"]:
+                return float(data["pair"]["fdv"])
+            print("[!] Dexscreener: FDV not found in response.")
+            return None
+        except Exception as e:
+            retries += 1
+            print(f"[!] Dexscreener fetch error (attempt {retries}): {e}")
+
+    # Fallback to Birdeye API if Dexscreener failed max_retries times
+    print("[*] Dexscreener failed max retries, falling back to Birdeye API...")
+    return get_market_cap_from_birdeye(contract_address)
 
 # -------------------------
 # TELEGRAM BOT MESSAGE SENDER
