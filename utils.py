@@ -1,8 +1,10 @@
 import os
 import requests
 import fcntl
+import base58
 from dotenv import load_dotenv
 from telethon.sync import TelegramClient
+from datetime import datetime
 
 # Load environment variables from .env
 load_dotenv(dotenv_path=".env")
@@ -15,6 +17,17 @@ def get_env_variable(key, required=True, default=None):
     if required and (value is None or value == ""):
         raise EnvironmentError(f"[!] Missing required environment variable: {key}")
     return value
+
+# -------------------------
+# SOLANA CONTRACT ADDRESS VALIDATION
+# -------------------------
+def is_valid_solana_address(address):
+    """Check if the string is a valid base58 Solana address (32 bytes)."""
+    try:
+        decoded = base58.b58decode(address)
+        return len(decoded) == 32
+    except Exception:
+        return False
 
 # -------------------------
 # PRICE FETCHING
@@ -71,7 +84,6 @@ def get_market_cap_from_dexscreener(contract_address):
         resp = requests.get(url, headers=headers, timeout=10)
         resp.raise_for_status()
         data = resp.json()
-        # Check both new and old formats
         if "pairs" in data and len(data["pairs"]) > 0 and "fdv" in data["pairs"][0]:
             return float(data["pairs"][0]["fdv"])
         elif "pair" in data and "fdv" in data["pair"]:
@@ -153,10 +165,24 @@ def clear_processed_ca():
         print(f"[!] Error clearing processed CA: {e}")
 
 # -------------------------
+# DAILY BUY LIMIT CYCLER
+# -------------------------
+def get_current_daily_limit():
+    """
+    Cycle buy limits: Day 1 = 5 buys, Day 2 = 4 buys, repeat.
+    Uses current day number to determine limit.
+    """
+    day_number = datetime.utcnow().toordinal()  # Changes daily
+    return 5 if day_number % 2 == 1 else 4
+
+# -------------------------
 # JUPITER SWAP
 # -------------------------
 def jupiter_buy(ca, amount_sol):
     try:
+        if not is_valid_solana_address(ca):
+            print(f"[!] Invalid Solana contract address: {ca}")
+            return False
         print(f"[BUY] {amount_sol} SOL -> {ca}")
         swap_url = get_env_variable("JUPITER_SWAP_API")
         payload = {
@@ -176,6 +202,9 @@ def jupiter_buy(ca, amount_sol):
 
 def jupiter_sell(ca):
     try:
+        if not is_valid_solana_address(ca):
+            print(f"[!] Invalid Solana contract address: {ca}")
+            return False
         print(f"[SELL] {ca} -> SOL")
         swap_url = get_env_variable("JUPITER_SWAP_API")
         amount_lamports = get_token_balance_lamports(ca)
