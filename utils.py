@@ -102,7 +102,7 @@ def send_telegram_message(text):
         bot_token = get_env_variable("TELEGRAM_BOT_TOKEN")
         chat_id = int(get_env_variable("TELEGRAM_CHAT_ID"))
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        payload = {"chat_id": chat_id, "text": text}
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
         resp = requests.post(url, json=payload, timeout=10)
         resp.raise_for_status()
     except Exception as e:
@@ -169,11 +169,22 @@ def clear_processed_ca():
 # -------------------------
 def get_current_daily_limit():
     """
-    Cycle buy limits: Day 1 = 5 buys, Day 2 = 4 buys, repeat.
-    Uses current day number to determine limit.
+    Cycle buy limits based on DAILY_LIMIT env var.
+    If DAILY_LIMIT is "5,4", it cycles day-by-day through the list.
+    Falls back to default [5,4] if env var is missing or invalid.
     """
-    day_number = datetime.utcnow().toordinal()  # Changes daily
-    return 5 if day_number % 2 == 1 else 4
+    try:
+        daily_limit_str = get_env_variable("DAILY_LIMIT", required=False, default="5,4")
+        daily_limits = [int(x.strip()) for x in daily_limit_str.split(",") if x.strip()]
+        if not daily_limits:
+            daily_limits = [5, 4]
+    except Exception as e:
+        print(f"[!] Error parsing DAILY_LIMIT env var: {e}")
+        daily_limits = [5, 4]
+
+    day_number = datetime.utcnow().toordinal()
+    index = day_number % len(daily_limits)
+    return daily_limits[index]
 
 # -------------------------
 # JUPITER SWAP
