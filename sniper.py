@@ -11,7 +11,7 @@ from utils import (
     read_from_target_channel,
     jupiter_buy,
     jupiter_sell,
-    get_current_daily_limit  # This reads DAILY_LIMITS from env and cycles through it
+    get_current_daily_limit
 )
 
 # Load env variables
@@ -37,23 +37,23 @@ while cycle_count < CYCLE_LIMIT:
     while current_day_investments < daily_limit:
         contract_address = None
 
-        # Fetch new CA from Telegram channel
+        # Fetch new contract address from Telegram channel
         while not contract_address:
             messages = read_from_target_channel(limit=5)
 
             for msg in messages:
                 if msg and "CA:" in msg:
-                    ca = msg.split("CA:")[1].strip().split()[0]
-                    if not is_ca_processed(ca):
-                        contract_address = ca
-                        save_processed_ca(ca)
+                    ca_candidate = msg.split("CA:")[1].strip().split()[0]
+                    if is_valid_solana_address(ca_candidate) and not is_ca_processed(ca_candidate):
+                        contract_address = ca_candidate
+                        save_processed_ca(contract_address)
                         break
 
             if not contract_address:
                 print("[!] No new contract address found. Retrying in 2 minutes...")
                 time.sleep(120)
 
-        # Retry market cap fetch up to 3 times before skipping
+        # Fetch market cap with retries (Dexscreener with Birdeye fallback inside utils)
         retries = 3
         market_cap_at_buy = None
         while retries > 0:
