@@ -13,6 +13,9 @@ from utils import (
     jupiter_sell
 )
 
+# ========================
+# LOAD ENVIRONMENT VARIABLES
+# ========================
 try:
     PRIVATE_KEY = get_env_variable("PRIVATE_KEY")
     SOLANA_RPC = get_env_variable("SOLANA_RPC")
@@ -20,24 +23,30 @@ try:
     REQUIRED_MULTIPLIER = float(get_env_variable("REQUIRED_MULTIPLIER"))
 
     daily_limit_str = get_env_variable("DAILY_LIMIT")
-    DAILY_LIMITS = [int(x.strip()) for x in daily_limit_str.split(",")]
+    DAILY_LIMITS = [int(x.strip()) for x in daily_limit_str.split(",") if x.strip()]
 
     CYCLE_LIMIT = int(get_env_variable("CYCLE_LIMIT"))
+
 except Exception as e:
     print(f"[!] Environment variable error: {e}")
     exit(1)
 
+# ========================
+# MAIN LOOP
+# ========================
 cycle_count = 0
 capital_usd = INVESTMENT_USD
 
 while cycle_count < CYCLE_LIMIT:
     daily_limit = DAILY_LIMITS[cycle_count] if cycle_count < len(DAILY_LIMITS) else DAILY_LIMITS[-1]
-
     current_day_investments = 0
+
+    print(f"[*] Starting cycle {cycle_count+1}/{CYCLE_LIMIT} | Daily limit: {daily_limit} buys")
 
     while current_day_investments < daily_limit:
         contract_address = None
 
+        # Find a new CA from Telegram channel
         while not contract_address:
             messages = read_from_target_channel(limit=5)
 
@@ -53,18 +62,21 @@ while cycle_count < CYCLE_LIMIT:
                 print("[!] No new contract address found. Retrying in 2 minutes...")
                 time.sleep(120)
 
+        # Get market cap before buy
         market_cap_at_buy = get_market_cap_from_dexscreener(contract_address)
-        if not market_cap_at_buy:
-            print("[!] Could not fetch market cap. Skipping this CA.")
+        if market_cap_at_buy is None:
+            print(f"[!] Could not fetch market cap for {contract_address}. Skipping.")
             continue
 
+        # Convert USD to SOL
         amount_sol = get_sol_amount_for_usd(capital_usd)
         if amount_sol == 0:
-            print("[!] Could not convert USD to SOL. Skipping this CA.")
+            print("[!] Could not convert USD to SOL. Skipping.")
             continue
 
+        # Execute buy
         if not jupiter_buy(contract_address, amount_sol):
-            print("[!] Buy transaction failed. Skipping this CA.")
+            print(f"[!] Buy transaction failed for {contract_address}. Skipping.")
             continue
 
         print(f"[✓] Bought {contract_address} at MC ${market_cap_at_buy:,.0f}")
@@ -72,15 +84,16 @@ while cycle_count < CYCLE_LIMIT:
             f"[BUY] {contract_address}\nMC: ${market_cap_at_buy:,.0f}\nAmount invested: ${capital_usd:.2f}"
         )
 
+        # Monitor until sell condition
         while True:
             current_mc = get_market_cap_from_dexscreener(contract_address)
-            if not current_mc:
-                print("[!] Market cap unavailable. Retrying in 2 minutes...")
+            if current_mc is None:
+                print(f"[!] Market cap unavailable for {contract_address}. Retrying in 2 minutes...")
                 time.sleep(120)
                 continue
 
             target_mc = market_cap_at_buy * REQUIRED_MULTIPLIER
-            print(f"[i] Waiting... Current MC: ${current_mc:,.0f} | Target MC: ${target_mc:,.0f}")
+            print(f"[i] Monitoring {contract_address} | Current MC: ${current_mc:,.0f} | Target MC: ${target_mc:,.0f}")
 
             if current_mc >= target_mc:
                 if jupiter_sell(contract_address):
@@ -90,15 +103,13 @@ while cycle_count < CYCLE_LIMIT:
                     )
 
                     gross_return = capital_usd * REQUIRED_MULTIPLIER
-                    gas_fee = calculate_total_gas_fee(gross_return)
-                    if gas_fee is None:
-                        gas_fee = 0
+                    gas_fee = calculate_total_gas_fee(gross_return) or 0
                     capital_usd = round(gross_return - gas_fee, 2)
 
                     print(f"[✓] Updated capital after fees: ${capital_usd:.2f} (fees: ${gas_fee:.2f})")
                     break
                 else:
-                    print("[!] Sell transaction failed. Retrying in 5 minutes...")
+                    print(f"[!] Sell transaction failed for {contract_address}. Retrying in 5 minutes...")
                     time.sleep(300)
             else:
                 time.sleep(60)
@@ -107,7 +118,7 @@ while cycle_count < CYCLE_LIMIT:
 
     cycle_count += 1
     print(f"[*] Finished day {cycle_count} of cycle. Sleeping until next UTC midnight.")
+
     now = datetime.utcnow()
     next_midnight = datetime(now.year, now.month, now.day) + timedelta(days=1)
-    sleep_seconds = (next_midnight - now).total_seconds()
-    time.sleep(sleep_seconds)
+    time.sleep((next_midnight - now).total_seconds())
