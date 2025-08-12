@@ -8,6 +8,7 @@ from datetime import datetime
 
 # Load environment variables from t.env
 load_dotenv(dotenv_path="t.env")
+
 # -------------------------
 # ENV VAR LOADER
 # -------------------------
@@ -21,7 +22,6 @@ def get_env_variable(key, required=True, default=None):
 # SOLANA CONTRACT ADDRESS VALIDATION
 # -------------------------
 def is_valid_solana_address(address):
-    """Check if the string is a valid base58 Solana address (32 bytes)."""
     try:
         decoded = base58.b58decode(address)
         return len(decoded) == 32
@@ -29,7 +29,7 @@ def is_valid_solana_address(address):
         return False
 
 # -------------------------
-# PRICE FETCHING
+# SOL PRICE FETCHING (Jupiter, fallback CoinGecko)
 # -------------------------
 def get_sol_price_usd():
     jupiter_price_api = get_env_variable("JUPITER_PRICE_API", required=False, default="https://price.jup.ag/v4/price")
@@ -41,10 +41,9 @@ def get_sol_price_usd():
         data = resp.json()
         if "data" in data and "SOL" in data["data"]:
             return float(data['data']['SOL']['price'])
-        raise ValueError("Invalid Jupiter API format")
+        raise ValueError("Invalid Jupiter API response")
     except Exception as jupiter_error:
         print(f"[!] Jupiter API failed: {jupiter_error}")
-
         try:
             cg_url = "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd"
             headers = {}
@@ -55,23 +54,23 @@ def get_sol_price_usd():
             data = resp.json()
             return float(data['solana']['usd'])
         except Exception as cg_error:
-            print(f"[!] CoinGecko fallback also failed: {cg_error}")
+            print(f"[!] CoinGecko fallback failed: {cg_error}")
             return 0
 
 # -------------------------
-# GAS CALCULATION
+# GAS FEE CALCULATION
 # -------------------------
 def calculate_total_gas_fee(amount_in_usd, congestion=False):
     base_fee = amount_in_usd * 0.009
     priority_fee_sol = 0.3 if congestion else 0.03
     sol_price = get_sol_price_usd()
     if sol_price == 0:
-        print("[!] Unable to fetch SOL price.")
+        print("[!] Unable to fetch SOL price for gas fee calculation.")
         return None
     return round(base_fee + (priority_fee_sol * sol_price), 4)
 
 # -------------------------
-# DEXSCREENER MARKET CAP
+# DEXSCREENER MARKET CAP FETCH
 # -------------------------
 def get_market_cap_from_dexscreener(contract_address):
     dexscreener_api_key = get_env_variable("DEXSCREENER_API_KEY", required=False)
@@ -94,7 +93,7 @@ def get_market_cap_from_dexscreener(contract_address):
         return None
 
 # -------------------------
-# TELEGRAM BOT
+# TELEGRAM BOT MESSAGE SENDER
 # -------------------------
 def send_telegram_message(text):
     try:
@@ -107,6 +106,9 @@ def send_telegram_message(text):
     except Exception as e:
         print(f"[!] Telegram send error: {e}")
 
+# -------------------------
+# TELEGRAM CHANNEL MESSAGE READER
+# -------------------------
 def read_from_target_channel(limit=10):
     try:
         api_id = int(get_env_variable("TELEGRAM_API_ID"))
@@ -120,17 +122,17 @@ def read_from_target_channel(limit=10):
         return []
 
 # -------------------------
-# SOLANA AMOUNT CALC
+# USD TO SOL AMOUNT CALC
 # -------------------------
 def get_sol_amount_for_usd(usd_amount):
     sol_price = get_sol_price_usd()
     if sol_price == 0:
-        print("[!] Cannot calculate SOL amount.")
+        print("[!] Cannot calculate SOL amount due to zero price.")
         return 0
     return round(usd_amount / sol_price, 5)
 
 # -------------------------
-# FILE LOCK SAFE CA TRACKER
+# PROCESSED CONTRACTS TRACKER
 # -------------------------
 def save_processed_ca(ca):
     try:
@@ -164,21 +166,16 @@ def clear_processed_ca():
         print(f"[!] Error clearing processed CA: {e}")
 
 # -------------------------
-# DAILY BUY LIMIT CYCLER
+# DAILY BUY LIMIT CYCLER (cycles through DAILY_LIMIT comma list)
 # -------------------------
 def get_current_daily_limit():
-    """
-    Cycle buy limits based on DAILY_LIMIT env var.
-    If DAILY_LIMIT is "5,4", it cycles day-by-day through the list.
-    Falls back to default [5,4] if env var is missing or invalid.
-    """
     try:
-        daily_limit_str = get_env_variable("DAILY_LIMIT", required=False, default="5,4")
+        daily_limit_str = get_env_variable("DAILY_LIMITS", required=False, default="5,4")
         daily_limits = [int(x.strip()) for x in daily_limit_str.split(",") if x.strip()]
         if not daily_limits:
             daily_limits = [5, 4]
     except Exception as e:
-        print(f"[!] Error parsing DAILY_LIMIT env var: {e}")
+        print(f"[!] Error parsing DAILY_LIMITS env var: {e}")
         daily_limits = [5, 4]
 
     day_number = datetime.utcnow().toordinal()
@@ -186,14 +183,14 @@ def get_current_daily_limit():
     return daily_limits[index]
 
 # -------------------------
-# JUPITER SWAP
+# JUPITER SWAP BUY
 # -------------------------
 def jupiter_buy(ca, amount_sol):
     try:
         if not is_valid_solana_address(ca):
             print(f"[!] Invalid Solana contract address: {ca}")
             return False
-        print(f"[BUY] {amount_sol} SOL -> {ca}")
+        print(f"[BUY] Swapping {amount_sol} SOL -> {ca}")
         swap_url = get_env_variable("JUPITER_SWAP_API")
         payload = {
             "inputMint": "So11111111111111111111111111111111111111112",
@@ -210,12 +207,15 @@ def jupiter_buy(ca, amount_sol):
         print(f"[!] Jupiter buy error: {e}")
         return False
 
+# -------------------------
+# JUPITER SWAP SELL
+# -------------------------
 def jupiter_sell(ca):
     try:
         if not is_valid_solana_address(ca):
             print(f"[!] Invalid Solana contract address: {ca}")
             return False
-        print(f"[SELL] {ca} -> SOL")
+        print(f"[SELL] Swapping {ca} -> SOL")
         swap_url = get_env_variable("JUPITER_SWAP_API")
         amount_lamports = get_token_balance_lamports(ca)
         if amount_lamports == 0:
@@ -237,7 +237,7 @@ def jupiter_sell(ca):
         return False
 
 # -------------------------
-# TOKEN BALANCE
+# FETCH TOKEN BALANCE LAMPORTS (for selling)
 # -------------------------
 def get_token_balance_lamports(token_mint):
     rpc_url = get_env_variable("SOLANA_RPC")
