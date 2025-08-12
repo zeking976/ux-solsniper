@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 # Load env from your env file (t.env)
 load_dotenv(dotenv_path="t.env")
 
-# Env vars aligned with your .env format
+# Environment variables
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 REPORTS_FILE = "trade_logs.json"
@@ -24,7 +24,7 @@ def send_telegram_message(text):
         "parse_mode": "Markdown"
     }
     try:
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=10)
         if not response.ok:
             print(f"[!] Telegram API Error: {response.text}")
     except Exception as e:
@@ -64,7 +64,6 @@ def record_buy(token, coin_name, buy_market_cap, buy_time, amount_usd, priority_
 
 def record_sell(token, sell_market_cap, sell_time, profit_usd):
     logs = load_logs()
-    # Find latest unmatched buy for this token
     for entry in reversed(logs):
         if entry["token"] == token and entry["sell_time"] is None:
             entry["sell_market_cap"] = sell_market_cap
