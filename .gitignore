@@ -3,16 +3,13 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Logs and debug files
-*.log
+# OS-specific files
+.DS_Store
+Thumbs.db
 
 # Environment variables
 .env
 t.env
-
-# OS-specific files
-.DS_Store
-Thumbs.db
 
 # Virtual environments
 venv/
@@ -24,10 +21,10 @@ env/
 .vscode/
 .idea/
 
-# Systemd service files (if not tracked)
+# Systemd service files (if you don’t want to track them)
 *.service
 
-# Jupiter Aggregator library caches or logs (precautionary)
+# Jupiter Aggregator library caches or logs
 .jup_cache/
 .jup_logs/
 
