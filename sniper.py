@@ -10,7 +10,8 @@ from utils import (
     save_processed_ca,
     read_from_target_channel,
     jupiter_buy,
-    jupiter_sell
+    jupiter_sell,
+    get_current_daily_limit  # This function handles daily limit cycling
 )
 
 # ========================
@@ -21,24 +22,16 @@ try:
     SOLANA_RPC = get_env_variable("SOLANA_RPC")
     INVESTMENT_USD = float(get_env_variable("INVESTMENT_USD"))
     REQUIRED_MULTIPLIER = float(get_env_variable("REQUIRED_MULTIPLIER"))
-
-    daily_limit_str = get_env_variable("DAILY_LIMIT")
-    DAILY_LIMITS = [int(x.strip()) for x in daily_limit_str.split(",") if x.strip()]
-
     CYCLE_LIMIT = int(get_env_variable("CYCLE_LIMIT"))
-
 except Exception as e:
     print(f"[!] Environment variable error: {e}")
     exit(1)
 
-# ========================
-# MAIN LOOP
-# ========================
 cycle_count = 0
 capital_usd = INVESTMENT_USD
 
 while cycle_count < CYCLE_LIMIT:
-    daily_limit = DAILY_LIMITS[cycle_count] if cycle_count < len(DAILY_LIMITS) else DAILY_LIMITS[-1]
+    daily_limit = get_current_daily_limit()
     current_day_investments = 0
 
     print(f"[*] Starting cycle {cycle_count+1}/{CYCLE_LIMIT} | Daily limit: {daily_limit} buys")
@@ -46,7 +39,7 @@ while cycle_count < CYCLE_LIMIT:
     while current_day_investments < daily_limit:
         contract_address = None
 
-        # Find a new CA from Telegram channel
+        # Fetch new CA from Telegram channel
         while not contract_address:
             messages = read_from_target_channel(limit=5)
 
@@ -62,19 +55,16 @@ while cycle_count < CYCLE_LIMIT:
                 print("[!] No new contract address found. Retrying in 2 minutes...")
                 time.sleep(120)
 
-        # Get market cap before buy
         market_cap_at_buy = get_market_cap_from_dexscreener(contract_address)
         if market_cap_at_buy is None:
             print(f"[!] Could not fetch market cap for {contract_address}. Skipping.")
             continue
 
-        # Convert USD to SOL
         amount_sol = get_sol_amount_for_usd(capital_usd)
         if amount_sol == 0:
             print("[!] Could not convert USD to SOL. Skipping.")
             continue
 
-        # Execute buy
         if not jupiter_buy(contract_address, amount_sol):
             print(f"[!] Buy transaction failed for {contract_address}. Skipping.")
             continue
@@ -84,7 +74,7 @@ while cycle_count < CYCLE_LIMIT:
             f"[BUY] {contract_address}\nMC: ${market_cap_at_buy:,.0f}\nAmount invested: ${capital_usd:.2f}"
         )
 
-        # Monitor until sell condition
+        # Monitor for target sell condition
         while True:
             current_mc = get_market_cap_from_dexscreener(contract_address)
             if current_mc is None:
@@ -121,4 +111,5 @@ while cycle_count < CYCLE_LIMIT:
 
     now = datetime.utcnow()
     next_midnight = datetime(now.year, now.month, now.day) + timedelta(days=1)
-    time.sleep((next_midnight - now).total_seconds())
+    sleep_seconds = (next_midnight - now).total_seconds()
+    time.sleep(sleep_seconds)
