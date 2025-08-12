@@ -6,9 +6,8 @@ from dotenv import load_dotenv
 from telethon.sync import TelegramClient
 from datetime import datetime
 
-# Load environment variables from .env
-load_dotenv(dotenv_path=".env")
-
+# Load environment variables from t.env
+load_dotenv(dotenv_path="t.env")
 # -------------------------
 # ENV VAR LOADER
 # -------------------------
