@@ -11,7 +11,7 @@ from utils import (
     read_from_target_channel,
     jupiter_buy,
     jupiter_sell,
-    get_current_daily_limit  # This reads DAILY_LIMIT from env and cycles through it
+    get_current_daily_limit  # This reads DAILY_LIMITS from env and cycles through it
 )
 
 # Load env variables
@@ -53,9 +53,19 @@ while cycle_count < CYCLE_LIMIT:
                 print("[!] No new contract address found. Retrying in 2 minutes...")
                 time.sleep(120)
 
-        market_cap_at_buy = get_market_cap_from_dexscreener(contract_address)
+        # Retry market cap fetch up to 3 times before skipping
+        retries = 3
+        market_cap_at_buy = None
+        while retries > 0:
+            market_cap_at_buy = get_market_cap_from_dexscreener(contract_address)
+            if market_cap_at_buy is not None:
+                break
+            retries -= 1
+            print(f"[!] Could not fetch market cap for {contract_address}, retries left: {retries}. Waiting 60 seconds.")
+            time.sleep(60)
+
         if market_cap_at_buy is None:
-            print(f"[!] Could not fetch market cap for {contract_address}. Skipping.")
+            print(f"[!] Failed to fetch market cap for {contract_address}. Skipping buy.")
             continue
 
         amount_sol = get_sol_amount_for_usd(capital_usd)
