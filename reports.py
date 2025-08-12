@@ -4,7 +4,7 @@ import datetime
 import requests
 from dotenv import load_dotenv
 
-# Load env from your env file (t.env)
+# Load env variables from your env file (t.env)
 load_dotenv(dotenv_path="t.env")
 
 # Environment variables
@@ -46,7 +46,7 @@ def save_logs(logs):
     with open(REPORTS_FILE, "w") as f:
         json.dump(logs, f, indent=4)
 
-def record_buy(token, coin_name, buy_market_cap, buy_time, amount_usd, priority_fee):
+def record_buy(token, coin_name, buy_market_cap, buy_time, amount_usd, priority_fee_sol):
     logs = load_logs()
     logs.append({
         "token": token,
@@ -54,7 +54,7 @@ def record_buy(token, coin_name, buy_market_cap, buy_time, amount_usd, priority_
         "buy_market_cap": buy_market_cap,
         "buy_time": buy_time,
         "amount_usd": amount_usd,
-        "priority_fee": priority_fee,
+        "priority_fee": priority_fee_sol,
         "sell_market_cap": None,
         "sell_time": None,
         "profit_usd": None,
