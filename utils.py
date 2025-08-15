@@ -43,6 +43,9 @@ def get_env_variable(key, required=True, default=None):
         raise EnvironmentError(f"[!] Missing required environment variable: {key}")
     return value
 
+# Dry run switch
+DRY_RUN = int(get_env_variable("DRY_RUN", required=False, default="0"))
+
 # -------------------------
 # Solana RPC client & keypair loader
 # -------------------------
@@ -326,6 +329,9 @@ def fetch_jupiter_quote(input_mint: str, output_mint: str, amount: int, slippage
         return None
 
 def execute_jupiter_swap_from_quote(quote: dict) -> Optional[str]:
+    if DRY_RUN:
+        logger.info("[DRY RUN] Would execute Jupiter swap: %s", quote)
+        return "SIMULATED_TX_SIGNATURE"
     try:
         swap_tx_b64 = quote.get("swapTransaction")
         if not swap_tx_b64:
@@ -352,7 +358,11 @@ def jupiter_buy(ca_mint: str, amount_sol: float, slippage_bps: int = 50) -> Opti
         return None
     congestion = detect_network_congestion()
     priority_fee_sol = get_priority_fee(congestion)
-    logger.info("Preparing BUY %s for %.6f SOL (tip %.3f SOL, congestion=%s)", ca_mint, amount_sol, priority_fee_sol, congestion)
+    logger.info("Preparing BUY %s for %.6f SOL (tip %.3f SOL, congestion=%s, dry_run=%s)", ca_mint, amount_sol, priority_fee_sol, congestion, DRY_RUN)
+    if DRY_RUN:
+        fake_sig = f"SIMULATED_BUY_{ca_mint[:6]}"
+        logger.info("[DRY RUN] Simulated BUY tx signature: %s", fake_sig)
+        return fake_sig
     amount_lamports = int(amount_sol * 1e9)
     sol_input_mint = "So11111111111111111111111111111111111111112"
     quote = fetch_jupiter_quote(sol_input_mint, ca_mint, amount_lamports, slippage_bps=slippage_bps)
@@ -376,7 +386,11 @@ def jupiter_sell(ca_mint: str, slippage_bps: int = 50) -> Optional[str]:
         return None
     congestion = detect_network_congestion()
     priority_fee_sol = get_priority_fee(congestion)
-    logger.info("Preparing SELL %s amount (lamports=%d) tip %.3f SOL, congestion=%s", ca_mint, amount, priority_fee_sol, congestion)
+    logger.info("Preparing SELL %s amount (lamports=%d) tip %.3f SOL, congestion=%s, dry_run=%s", ca_mint, amount, priority_fee_sol, congestion, DRY_RUN)
+    if DRY_RUN:
+        fake_sig = f"SIMULATED_SELL_{ca_mint[:6]}"
+        logger.info("[DRY RUN] Simulated SELL tx signature: %s", fake_sig)
+        return fake_sig
     sol_output_mint = "So11111111111111111111111111111111111111112"
     quote = fetch_jupiter_quote(ca_mint, sol_output_mint, amount, slippage_bps=slippage_bps)
     if not quote:
