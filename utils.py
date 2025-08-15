@@ -113,7 +113,6 @@ def get_sol_price_usd() -> float:
         data = resp.json()
         if "data" in data and "SOL" in data["data"]:
             return float(data["data"]["SOL"]["price"])
-        # fallback: try response root
         if "SOL" in data:
             return float(data["SOL"]["price"])
     except Exception as e:
@@ -151,22 +150,18 @@ def calculate_total_gas_fee(amount_in_usd: float, congestion: Optional[bool] = N
     if sol_price <= 0:
         logger.warning("SOL price unknown, cannot compute gas fees accurately.")
         return None
-    base_fee_usd = amount_in_usd * 0.009   # 0.9% of transaction as gas estimate in USD
+    base_fee_usd = amount_in_usd * 0.009   # 0.9% estimate
     if congestion is None:
         congestion = detect_network_congestion()
     priority_fee_sol = get_priority_fee(congestion)
     priority_fee_usd = priority_fee_sol * sol_price
     total = base_fee_usd + priority_fee_usd
-    # Return in USD rounded
     return round(total, 6)
 
 # -------------------------
 # SAVE GAS RESERVE FUNCTION
 # -------------------------
 def save_gas_reserve_after_trade(current_usd_balance: float, reserve_pct: float = 0.0009) -> float:
-    """
-    Subtracts reserve_pct (default 0.09%) from balance and returns updated balance.
-    """
     reserve = current_usd_balance * reserve_pct
     new_balance = current_usd_balance - reserve
     logger.info("Saved gas reserve %.6f USD (%.4f%%). New balance: %.6f", reserve, reserve_pct*100, new_balance)
@@ -222,7 +217,7 @@ def clear_processed_ca():
         logger.exception("clear_processed_ca error: %s", e)
 
 # -------------------------
-# MARKETCAP FETCH (Dexscreener with birdeye fallback)
+# MARKETCAP FETCH
 # -------------------------
 def get_market_cap_from_dexscreener(contract_address: str, max_retries: int = 3) -> Optional[float]:
     base = f"https://api.dexscreener.io/latest/dex/pairs/solana/{contract_address}"
@@ -234,7 +229,6 @@ def get_market_cap_from_dexscreener(contract_address: str, max_retries: int = 3)
             resp = requests.get(base, headers=headers, timeout=8)
             resp.raise_for_status()
             data = resp.json()
-            # flexible parse
             if "pairs" in data and data["pairs"]:
                 fdv = data["pairs"][0].get("fdv") or data["pairs"][0].get("marketCap") or 0
                 if fdv:
@@ -248,7 +242,6 @@ def get_market_cap_from_dexscreener(contract_address: str, max_retries: int = 3)
         except Exception as e:
             logger.warning("Dexscreener attempt %d failed: %s", attempt, e)
             time.sleep(1 + attempt)
-    # fallback to birdeye
     return get_market_cap_from_birdeye(contract_address)
 
 def get_market_cap_from_birdeye(contract_address: str) -> Optional[float]:
@@ -257,7 +250,6 @@ def get_market_cap_from_birdeye(contract_address: str) -> Optional[float]:
         resp = requests.get(url, timeout=8)
         resp.raise_for_status()
         data = resp.json()
-        # try different keys
         if isinstance(data, dict):
             if data.get("fdv"):
                 return float(data.get("fdv"))
@@ -283,7 +275,6 @@ def get_token_balance_lamports(token_mint: str) -> int:
                 {"encoding": "jsonParsed"}
             ]
         }
-        # FIXED: use public RPC_URL instead of RPC._provider.endpoint_uri
         resp = requests.post(RPC_URL, json=body, timeout=8)
         resp.raise_for_status()
         res = resp.json()
@@ -308,12 +299,11 @@ def get_sol_amount_for_usd(usd_amount: float) -> float:
     return round(usd_amount / price, 9)
 
 # -------------------------
-# JUPITER QUOTE & SWAP (real buys/sells)
+# JUPITER QUOTE & SWAP (Anti-MEV)
 # -------------------------
 def fetch_jupiter_quote(input_mint: str, output_mint: str, amount: int, slippage_bps: int = 50) -> Optional[dict]:
     """
-    Calls Jupiter quote endpoint and returns the first route dict (including swapTransaction)
-    amount = integer amount in smallest unit (lamports for SOL or amount in token base units).
+    Calls Jupiter quote endpoint with Anti-MEV flags.
     """
     try:
         params = {
@@ -321,7 +311,8 @@ def fetch_jupiter_quote(input_mint: str, output_mint: str, amount: int, slippage
             "outputMint": output_mint,
             "amount": str(amount),
             "slippageBps": slippage_bps,
-            "onlyDirectRoutes": False
+            "onlyDirectRoutes": False,
+            "asymmetricSlippage": True  # MEV protection
         }
         r = requests.get(JUPITER_QUOTE_API, params=params, timeout=10)
         r.raise_for_status()
@@ -335,20 +326,13 @@ def fetch_jupiter_quote(input_mint: str, output_mint: str, amount: int, slippage
         return None
 
 def execute_jupiter_swap_from_quote(quote: dict) -> Optional[str]:
-    """
-    Given a quote dict (which often has `swapTransaction` base64), decode, sign, send.
-    Returns signature string on success.
-    """
     try:
         swap_tx_b64 = quote.get("swapTransaction")
         if not swap_tx_b64:
-            # Some Jupiter endpoints return `swapTransactions` as array or require different route; handle gracefully.
             logger.error("Quote has no swapTransaction: %s", quote)
             return None
         raw = base64.b64decode(swap_tx_b64)
-        # Deserialize, sign and send using solana library
         tx = Transaction.deserialize(raw)
-        # Sign with local keypair
         tx.sign(KEYPAIR)
         serialized = bytes(tx.serialize())
         resp = RPC.send_raw_transaction(serialized, opts=TxOpts(skip_preflight=False, preflight_commitment="processed"))
@@ -363,26 +347,18 @@ def execute_jupiter_swap_from_quote(quote: dict) -> Optional[str]:
         return None
 
 def jupiter_buy(ca_mint: str, amount_sol: float, slippage_bps: int = 50) -> Optional[str]:
-    """
-    Buy token at ca_mint using SOL (wrapped SOL input mint).
-    amount_sol: float SOL amount to spend
-    Returns tx signature or None
-    """
     if not is_valid_solana_address(ca_mint):
         logger.error("Invalid token mint: %s", ca_mint)
         return None
     congestion = detect_network_congestion()
     priority_fee_sol = get_priority_fee(congestion)
     logger.info("Preparing BUY %s for %.6f SOL (tip %.3f SOL, congestion=%s)", ca_mint, amount_sol, priority_fee_sol, congestion)
-    # amount in lamports
     amount_lamports = int(amount_sol * 1e9)
-    # Use SOL input mint
     sol_input_mint = "So11111111111111111111111111111111111111112"
     quote = fetch_jupiter_quote(sol_input_mint, ca_mint, amount_lamports, slippage_bps=slippage_bps)
     if not quote:
         logger.error("No quote for buy")
         return None
-    # sign & send
     sig = execute_jupiter_swap_from_quote(quote)
     if sig:
         logger.info("Buy tx sent: %s", sig)
@@ -391,14 +367,9 @@ def jupiter_buy(ca_mint: str, amount_sol: float, slippage_bps: int = 50) -> Opti
     return sig
 
 def jupiter_sell(ca_mint: str, slippage_bps: int = 50) -> Optional[str]:
-    """
-    Sell entire token holdings of ca_mint back to SOL.
-    Returns tx signature or None
-    """
     if not is_valid_solana_address(ca_mint):
         logger.error("Invalid token mint: %s", ca_mint)
         return None
-    # fetch token balance in lamports (token base units)
     amount = get_token_balance_lamports(ca_mint)
     if amount == 0:
         logger.info("No token balance for %s", ca_mint)
