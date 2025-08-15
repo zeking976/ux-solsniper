@@ -1,50 +1,37 @@
-# Byte-compiled / cache files
 __pycache__/
 *.py[cod]
 *$py.class
 
-# OS-specific files
 .DS_Store
 Thumbs.db
 
-# Environment variables
 .env
 t.env
 
-# Virtual environments
 venv/
 ENV/
 env/
 .venv/
 
-# IDE config folders
 .vscode/
 .idea/
 
-# Systemd service files (if you don’t want to track them)
 *.service
 
-# Jupiter Aggregator library caches or logs
 .jup_cache/
 .jup_logs/
 
-# Reports or output files (optional)
 *.csv
 *.pdf
 *.xlsx
 
-# PyInstaller build files
 *.spec
 dist/
 build/
 
-# Telethon session files (sensitive!)
 *.session
 *.session-journal
 
-# Backup and temp files
 *~
 *.bak
-
-# Compiled shared objects (C extensions)
 *.so
