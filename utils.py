@@ -283,7 +283,8 @@ def get_token_balance_lamports(token_mint: str) -> int:
                 {"encoding": "jsonParsed"}
             ]
         }
-        resp = requests.post(RPC_URL := RPC._provider.endpoint_uri, json=body, timeout=8)
+        # FIXED: use public RPC_URL instead of RPC._provider.endpoint_uri
+        resp = requests.post(RPC_URL, json=body, timeout=8)
         resp.raise_for_status()
         res = resp.json()
         accounts = res.get("result", {}).get("value", [])
