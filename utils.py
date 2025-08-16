@@ -20,9 +20,7 @@ from solana.rpc.types import TxOpts
 # Load env
 load_dotenv(dotenv_path="t.env")
 
-# -------------------------
 # Logging
-# -------------------------
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logger = logging.getLogger("ux_solsniper")
 logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
@@ -84,9 +82,7 @@ RPC = Client(RPC_URL)
 KEYPAIR = _load_keypair_from_env()
 PUBLIC_KEY = get_env_variable("PUBLIC_KEY")
 
-# -------------------------
 # Jupiter APIs
-# -------------------------
 JUPITER_PRICE_API = get_env_variable("JUPITER_PRICE_API", required=False,
                                     default="https://price.jup.ag/v4/price")
 JUPITER_QUOTE_API = get_env_variable("JUPITER_QUOTE_API", required=False,
@@ -96,9 +92,7 @@ JUPITER_SWAP_API = get_env_variable("JUPITER_SWAP_API", required=False,
 
 DEXSCREENER_API_KEY = get_env_variable("DEXSCREENER_API_KEY", required=False, default="")
 
-# -------------------------
 # Telegram
-# -------------------------
 TELEGRAM_BOT_TOKEN = get_env_variable("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = get_env_variable("TELEGRAM_CHAT_ID")
 
@@ -108,10 +102,13 @@ TELEGRAM_CHAT_ID = get_env_variable("TELEGRAM_CHAT_ID")
 def is_valid_solana_address(address: str) -> bool:
     try:
         decoded = base58.b58decode(address)
-        return len(decoded) in (32, 34)
+        return len(decoded) in (32, 34)  # token mints are 32 bytes
     except Exception:
         return False
 
+# -------------------------
+# SOL PRICE (USD)
+# -------------------------
 def get_sol_price_usd() -> float:
     try:
         resp = requests.get(f"{JUPITER_PRICE_API}?ids=SOL", timeout=8)
@@ -125,10 +122,21 @@ def get_sol_price_usd() -> float:
         logger.warning("Jupiter price API failed: %s", e)
     return 0.0
 
+# -------------------------
+# CONGESTION / TIP LOGIC
+# -------------------------
 def get_priority_fee(congestion: bool) -> float:
+    """
+    Return priority fee in SOL.
+    Normal: 0.03 SOL, Congested: 0.3 SOL
+    """
     return 0.3 if congestion else 0.03
 
 def detect_network_congestion(threshold_ms: int = 500) -> bool:
+    """
+    Simple heuristic: measure a small RPC request latency
+    If RPC latency > threshold_ms, mark as congested.
+    """
     try:
         start = time.time()
         RPC.get_slot()
@@ -137,12 +145,15 @@ def detect_network_congestion(threshold_ms: int = 500) -> bool:
     except Exception:
         return False
 
+# -------------------------
+# GAS FEE CALCULATION
+# -------------------------
 def calculate_total_gas_fee(amount_in_usd: float, congestion: Optional[bool] = None) -> Optional[float]:
     sol_price = get_sol_price_usd()
     if sol_price <= 0:
         logger.warning("SOL price unknown, cannot compute gas fees accurately.")
         return None
-    base_fee_usd = amount_in_usd * 0.009
+    base_fee_usd = amount_in_usd * 0.009   # 0.9% estimate
     if congestion is None:
         congestion = detect_network_congestion()
     priority_fee_sol = get_priority_fee(congestion)
@@ -150,12 +161,18 @@ def calculate_total_gas_fee(amount_in_usd: float, congestion: Optional[bool] = N
     total = base_fee_usd + priority_fee_usd
     return round(total, 6)
 
+# -------------------------
+# SAVE GAS RESERVE FUNCTION
+# -------------------------
 def save_gas_reserve_after_trade(current_usd_balance: float, reserve_pct: float = 0.0009) -> float:
     reserve = current_usd_balance * reserve_pct
     new_balance = current_usd_balance - reserve
     logger.info("Saved gas reserve %.6f USD (%.4f%%). New balance: %.6f", reserve, reserve_pct*100, new_balance)
     return round(new_balance, 6)
 
+# -------------------------
+# TELEGRAM SENDER
+# -------------------------
 def send_telegram_message(text: str):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -167,7 +184,7 @@ def send_telegram_message(text: str):
         logger.exception("Telegram send exception: %s", e)
 
 # -------------------------
-# PROCESSED CONTRACTS
+# PROCESSED CONTRACTS (file lock safe)
 # -------------------------
 PROCESSED_FILE = "processed_ca.txt"
 
@@ -203,7 +220,7 @@ def clear_processed_ca():
         logger.exception("clear_processed_ca error: %s", e)
 
 # -------------------------
-# MARKETCAP
+# MARKETCAP FETCH
 # -------------------------
 def get_market_cap_from_dexscreener(contract_address: str, max_retries: int = 3) -> Optional[float]:
     base = f"https://api.dexscreener.io/latest/dex/pairs/solana/{contract_address}"
@@ -228,10 +245,26 @@ def get_market_cap_from_dexscreener(contract_address: str, max_retries: int = 3)
         except Exception as e:
             logger.warning("Dexscreener attempt %d failed: %s", attempt, e)
             time.sleep(1 + attempt)
-    return None
+    return get_market_cap_from_birdeye(contract_address)
+
+def get_market_cap_from_birdeye(contract_address: str) -> Optional[float]:
+    try:
+        url = f"https://public-api.birdeye.so/defi/price?address={contract_address}"
+        resp = requests.get(url, timeout=8)
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, dict):
+            if data.get("fdv"):
+                return float(data.get("fdv"))
+            if data.get("marketCap"):
+                return float(data.get("marketCap"))
+        return None
+    except Exception as e:
+        logger.warning("Birdeye fetch failed: %s", e)
+        return None
 
 # -------------------------
-# RPC helpers
+# RPC helpers (token balances)
 # -------------------------
 def get_token_balance_lamports(token_mint: str) -> int:
     try:
@@ -258,6 +291,9 @@ def get_token_balance_lamports(token_mint: str) -> int:
         logger.exception("get_token_balance_lamports error: %s", e)
         return 0
 
+# -------------------------
+# SOL USD conversion
+# -------------------------
 def get_sol_amount_for_usd(usd_amount: float) -> float:
     price = get_sol_price_usd()
     if price <= 0:
@@ -266,9 +302,12 @@ def get_sol_amount_for_usd(usd_amount: float) -> float:
     return round(usd_amount / price, 9)
 
 # -------------------------
-# JUPITER QUOTE & SWAP
+# JUPITER QUOTE & SWAP (Anti-MEV)
 # -------------------------
 def fetch_jupiter_quote(input_mint: str, output_mint: str, amount: int, slippage_bps: int = 50) -> Optional[dict]:
+    """
+    Calls Jupiter quote endpoint with Anti-MEV flags.
+    """
     try:
         params = {
             "inputMint": input_mint,
@@ -276,13 +315,14 @@ def fetch_jupiter_quote(input_mint: str, output_mint: str, amount: int, slippage
             "amount": str(amount),
             "slippageBps": slippage_bps,
             "onlyDirectRoutes": False,
-            "asymmetricSlippage": True
+            "asymmetricSlippage": True  # MEV protection
         }
         r = requests.get(JUPITER_QUOTE_API, params=params, timeout=10)
         r.raise_for_status()
         data = r.json()
         if "data" in data and data["data"]:
             return data["data"][0]
+        logger.warning("No data in Jupiter quote response: %s", data)
         return None
     except Exception as e:
         logger.exception("fetch_jupiter_quote error: %s", e)
@@ -306,6 +346,7 @@ def execute_jupiter_swap_from_quote(quote: dict) -> Optional[str]:
         if sig:
             logger.info("Broadcasted tx signature: %s", sig)
             return sig
+        logger.error("RPC response missing signature: %s", resp)
         return None
     except Exception as e:
         logger.exception("execute_jupiter_swap_from_quote error: %s", e)
@@ -324,11 +365,16 @@ def jupiter_buy(ca_mint: str, amount_sol: float, slippage_bps: int = 50) -> Opti
         return fake_sig
     amount_lamports = int(amount_sol * 1e9)
     sol_input_mint = "So11111111111111111111111111111111111111112"
-    quote = fetch_jupiter_quote(sol_input_mint, ca_mint, amount_lamports, slippage_bps)
+    quote = fetch_jupiter_quote(sol_input_mint, ca_mint, amount_lamports, slippage_bps=slippage_bps)
     if not quote:
         logger.error("No quote for buy")
         return None
-    return execute_jupiter_swap_from_quote(quote)
+    sig = execute_jupiter_swap_from_quote(quote)
+    if sig:
+        logger.info("Buy tx sent: %s", sig)
+    else:
+        logger.error("Buy tx failed to broadcast")
+    return sig
 
 def jupiter_sell(ca_mint: str, slippage_bps: int = 50) -> Optional[str]:
     if not is_valid_solana_address(ca_mint):
@@ -346,8 +392,13 @@ def jupiter_sell(ca_mint: str, slippage_bps: int = 50) -> Optional[str]:
         logger.info("[DRY RUN] Simulated SELL tx signature: %s", fake_sig)
         return fake_sig
     sol_output_mint = "So11111111111111111111111111111111111111112"
-    quote = fetch_jupiter_quote(ca_mint, sol_output_mint, amount, slippage_bps)
+    quote = fetch_jupiter_quote(ca_mint, sol_output_mint, amount, slippage_bps=slippage_bps)
     if not quote:
         logger.error("No quote for sell")
         return None
-    return execute_jupiter_swap_from_quote(quote)
+    sig = execute_jupiter_swap_from_quote(quote)
+    if sig:
+        logger.info("Sell tx sent: %s", sig)
+    else:
+        logger.error("Sell tx failed to broadcast")
+    return sig
