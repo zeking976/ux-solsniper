@@ -13,7 +13,7 @@ from dotenv import load_dotenv
   
 # Solana  
 from solana.rpc.api import Client  
-from solana.keypair import Keypair  
+from solders.keypair import Keypair  
 from solana.transaction import Transaction  
 from solana.rpc.types import TxOpts  
   
