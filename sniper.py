@@ -1,6 +1,7 @@
 import os
 import time
 import traceback
+import threading
 from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
@@ -17,7 +18,7 @@ from utils import (
     jupiter_sell,
     calculate_total_gas_fee,
     save_gas_reserve_after_trade,
-    get_current_daily_limit  # note: implemented below if missing
+    # get_current_daily_limit  # note: implemented below if missing
 )
 
 load_dotenv(dotenv_path="t.env")
@@ -39,9 +40,9 @@ def get_current_daily_limit():
         daily_limits = os.getenv("DAILY_LIMITS", "5,4").split(",")
         daily_limits = [int(x.strip()) for x in daily_limits if x.strip()]
         if not daily_limits:
-            daily_limits = [5,4]
+            daily_limits = [5, 4]
     except Exception:
-        daily_limits = [5,4]
+        daily_limits = [5, 4]
     day_index = datetime.utcnow().toordinal() % len(daily_limits)
     return int(daily_limits[day_index])
 
@@ -51,6 +52,27 @@ capital_usd = INVESTMENT_USD
 
 # Event handler collects new contract addresses as they show
 found_contracts = []
+
+
+def read_from_target_channel(limit: int = 5):
+    """
+    Local helper to fetch latest messages from TARGET_CHANNEL_ID.
+    Returns a list of message texts (most recent first).
+    Works in Termux/VPS because we call Telethon via the running client loop.
+    """
+    try:
+        # ensure client is connected; get_messages returns most recent first
+        msgs = client.loop.run_until_complete(client.get_messages(TARGET_CHANNEL_ID, limit=limit))
+        out = []
+        for m in msgs:
+            try:
+                out.append(m.message or "")
+            except Exception:
+                out.append("")
+        return out
+    except Exception as e:
+        send_telegram_message(f"[!] read_from_target_channel error: {e}")
+        return []
 
 
 @client.on(events.NewMessage(chats=TARGET_CHANNEL_ID))
@@ -85,7 +107,7 @@ def pick_next_contract(limit_checks=5):
         if not is_ca_processed(candidate):
             return candidate
     # fallback read latest messages
-    from utils import read_from_target_channel, is_valid_solana_address
+    from utils import is_valid_solana_address
     msgs = read_from_target_channel(limit=limit_checks)
     for m in msgs:
         if not m:
@@ -145,7 +167,7 @@ def main_loop():
                     send_telegram_message("[!] Invalid SOL amount, skipping")
                     continue
 
-                # perform buy (real)
+                # perform buy (real vs DRY)
                 if DRY_RUN:
                     send_telegram_message(f"[DRY RUN] Would buy {ca} for {amount_sol} SOL (${capital_usd})")
                     buy_sig = None
@@ -208,19 +230,47 @@ def main_loop():
         send_telegram_message(f"[*] Day finished. Sleeping {int(sleep_seconds)} seconds until next UTC midnight.")
         time.sleep(sleep_seconds)
 
+
+def _telethon_runner():
+    """
+    Runs Telethon's event loop so @client.on handlers fire while main_loop() runs.
+    Uses a daemon thread so it works in Termux and on VULTR.
+    """
+    try:
+        with client:
+            client.run_until_disconnected()
+    except Exception as e:
+        send_telegram_message(f"[!] Telethon runner crashed: {e}")
+
+
 # resilient runner that auto reconnects Telethon if needed
 def start_bot():
     while True:
         try:
-            with client:
-                # client will run until disconnected; Telethon will maintain session file
-                client.loop.create_task(client.run_until_disconnected())
-                # start main loop in background
-                main_loop()
+            # Ensure session connects before spawning runner thread
+            client.connect()
+            if not client.is_user_authorized():
+                # Will prompt device login on first-ever run; for headless, use code sent to your TG
+                client.start()
+
+            # Start Telethon event loop in background so handlers work
+            t = threading.Thread(target=_telethon_runner, daemon=True)
+            t.start()
+
+            # Run main trading loop in the main thread
+            main_loop()
+
+            # If main_loop exits naturally, pause briefly then loop (or break)
+            time.sleep(3)
         except (errors.RPCError, ConnectionResetError, Exception) as e:
             send_telegram_message(f"[!] Bot disconnected / crashed: {e}. Restarting in 15s.")
+            try:
+                client.disconnect()
+            except Exception:
+                pass
             time.sleep(15)
             continue
+
 
 if __name__ == "__main__":
     start_bot()
