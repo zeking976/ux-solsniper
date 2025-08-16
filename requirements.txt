@@ -2,7 +2,7 @@ python-dotenv
 requests
 telethon==1.34.0
 solana==0.26.0
-solders==0.18.1
+solders
 base58
 httpx<0.24
 pytz==2024.1
