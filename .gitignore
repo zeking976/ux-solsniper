@@ -1,37 +1,51 @@
+# Python cache & compiled files
 __pycache__/
 *.py[cod]
 *$py.class
 
+# OS files
 .DS_Store
 Thumbs.db
 
+# Environment files
 .env
 t.env
 
+# Virtual environments
 venv/
 ENV/
 env/
 .venv/
 
+# IDE configs
 .vscode/
 .idea/
 
+# Systemd or other service files
 *.service
 
+# Jupiter cache & logs
 .jup_cache/
 .jup_logs/
 
+# Data files
 *.csv
 *.pdf
 *.xlsx
 
+# Build / distribution
 *.spec
 dist/
 build/
 
+# Telethon sessions
 *.session
 *.session-journal
 
+# Backup / temp files
 *~
 *.bak
 *.so
+
+# Bot logs
+bot.log
