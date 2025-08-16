@@ -21,15 +21,18 @@ from utils import (
     # get_current_daily_limit  # note: implemented below if missing
 )
 
+# Load environment
 load_dotenv(dotenv_path="t.env")
 
+# Required envs (will raise if missing)
 API_ID = int(get_env_variable("TELEGRAM_API_ID"))
 API_HASH = get_env_variable("TELEGRAM_API_HASH")
 TARGET_CHANNEL_ID = int(get_env_variable("TARGET_CHANNEL_ID"))
 INVESTMENT_USD = float(get_env_variable("INVESTMENT_USD"))
 REQUIRED_MULTIPLIER = float(get_env_variable("REQUIRED_MULTIPLIER"))
 CYCLE_LIMIT = int(get_env_variable("CYCLE_LIMIT"))
-DRY_RUN = os.getenv("DRY_RUN", "0") == "1"
+# DRY_RUN stored as string "0" or "1" in t.env — use get_env_variable so missing var is noticed
+DRY_RUN = get_env_variable("DRY_RUN", required=False, default="0") == "1"
 
 # Telethon client (non-interactive) - uses session file 'telethon.session'
 client = TelegramClient("telethon", API_ID, API_HASH, device_model="ux-solsniper")
@@ -53,6 +56,13 @@ capital_usd = INVESTMENT_USD
 # Event handler collects new contract addresses as they show
 found_contracts = []
 
+# Safe sender wrapper so Telegram errors do not crash the bot
+def safe_send_telegram(text: str):
+    try:
+        send_telegram_message(text)
+    except Exception as e:
+        # fallback to printing; don't let messaging failures crash the bot
+        print(f"[!] safe_send_telegram failed: {e} | msg: {text}")
 
 def read_from_target_channel(limit: int = 5):
     """
@@ -71,9 +81,8 @@ def read_from_target_channel(limit: int = 5):
                 out.append("")
         return out
     except Exception as e:
-        send_telegram_message(f"[!] read_from_target_channel error: {e}")
+        safe_send_telegram(f"[!] read_from_target_channel error: {e}")
         return []
-
 
 @client.on(events.NewMessage(chats=TARGET_CHANNEL_ID))
 async def new_message_handler(event):
@@ -83,11 +92,11 @@ async def new_message_handler(event):
         if "CA:" in text:
             ca = text.split("CA:")[1].strip().split()[0]
         else:
-            # fallback: find 44-char base58-looking string
+            # fallback: find 32-44 char base58-looking string
             parts = text.strip().split()
             ca = None
             for p in parts:
-                if len(p) >= 32 and len(p) <= 44:
+                if 32 <= len(p) <= 44:
                     ca = p.strip()
                     break
         if ca:
@@ -95,10 +104,9 @@ async def new_message_handler(event):
             from utils import is_valid_solana_address
             if is_valid_solana_address(ca) and not is_ca_processed(ca):
                 found_contracts.append(ca)
-                send_telegram_message(f"[+] Detected new CA: `{ca}`")
+                safe_send_telegram(f"[+] Detected new CA: `{ca}`")
     except Exception as e:
-        send_telegram_message(f"[!] Error parsing new message: {e}")
-
+        safe_send_telegram(f"[!] Error parsing new message: {e}")
 
 def pick_next_contract(limit_checks=5):
     # check pending found_contracts first
@@ -118,20 +126,19 @@ def pick_next_contract(limit_checks=5):
             parts = m.split()
             ca_cand = None
             for p in parts:
-                if len(p) >= 32 and len(p) <= 44:
+                if 32 <= len(p) <= 44:
                     ca_cand = p
                     break
         if ca_cand and is_valid_solana_address(ca_cand) and not is_ca_processed(ca_cand):
             return ca_cand
     return None
 
-
 def main_loop():
     global cycle_count, capital_usd
     while cycle_count < CYCLE_LIMIT:
         daily_limit = get_current_daily_limit()
         current_invests = 0
-        send_telegram_message(f"[*] Starting cycle {cycle_count+1}/{CYCLE_LIMIT} | Daily limit: {daily_limit}")
+        safe_send_telegram(f"[*] Starting cycle {cycle_count+1}/{CYCLE_LIMIT} | Daily limit: {daily_limit}")
         while current_invests < daily_limit:
             try:
                 # pick next CA
@@ -142,7 +149,7 @@ def main_loop():
                     if not ca:
                         pick_waits += 1
                         if pick_waits > 30:
-                            send_telegram_message("[*] No CA found after many attempts — sleeping 2 minutes")
+                            safe_send_telegram("[*] No CA found after many attempts — sleeping 2 minutes")
                             time.sleep(120)
                             pick_waits = 0
                         else:
@@ -158,26 +165,26 @@ def main_loop():
                         break
                     time.sleep(5)
                 if not mcap:
-                    send_telegram_message(f"[!] Could not get market cap for {ca}, skipping")
+                    safe_send_telegram(f"[!] Could not get market cap for {ca}, skipping")
                     continue
 
                 # compute amount (in SOL)
                 amount_sol = get_sol_amount_for_usd(capital_usd)
                 if amount_sol <= 0:
-                    send_telegram_message("[!] Invalid SOL amount, skipping")
+                    safe_send_telegram("[!] Invalid SOL amount, skipping")
                     continue
 
                 # perform buy (real vs DRY)
                 if DRY_RUN:
-                    send_telegram_message(f"[DRY RUN] Would buy {ca} for {amount_sol} SOL (${capital_usd})")
+                    safe_send_telegram(f"[DRY RUN] Would buy {ca} for {amount_sol} SOL (${capital_usd})")
                     buy_sig = None
                 else:
                     buy_sig = jupiter_buy(ca, amount_sol)
                 if not DRY_RUN and not buy_sig:
-                    send_telegram_message(f"[!] Buy failed for {ca}; skipping sell monitor")
+                    safe_send_telegram(f"[!] Buy failed for {ca}; skipping sell monitor")
                     continue
 
-                send_telegram_message(f"[BUY] CA `{ca}` invested ${capital_usd:.2f} ({amount_sol} SOL) | tx: {buy_sig or 'DRY'} | MC at buy: ${mcap:,.0f}")
+                safe_send_telegram(f"[BUY] CA `{ca}` invested ${capital_usd:.2f} ({amount_sol} SOL) | tx: {buy_sig or 'DRY'} | MC at buy: ${mcap:,.0f}")
 
                 # monitor for target MC
                 target_mc = mcap * REQUIRED_MULTIPLIER
@@ -192,22 +199,22 @@ def main_loop():
                         if cur_mc >= target_mc:
                             # sell
                             if DRY_RUN:
-                                send_telegram_message(f"[DRY RUN] Would sell {ca} now at MC ${cur_mc:,.0f}")
+                                safe_send_telegram(f"[DRY RUN] Would sell {ca} now at MC ${cur_mc:,.0f}")
                                 sell_sig = None
                                 sold = True
                             else:
                                 sell_sig = jupiter_sell(ca)
                                 if sell_sig:
-                                    send_telegram_message(f"[SELL] CA `{ca}` sold at MC ${cur_mc:,.0f} | tx: {sell_sig}")
+                                    safe_send_telegram(f"[SELL] CA `{ca}` sold at MC ${cur_mc:,.0f} | tx: {sell_sig}")
                                     sold = True
                                 else:
-                                    send_telegram_message(f"[!] Sell failed for {ca}; retrying in 2 minutes")
+                                    safe_send_telegram(f"[!] Sell failed for {ca}; retrying in 2 minutes")
                                     time.sleep(120)
                         else:
                             # wait
                             time.sleep(60)
                     except Exception as e:
-                        send_telegram_message(f"[!] Monitoring loop exception: {e}")
+                        safe_send_telegram(f"[!] Monitoring loop exception: {e}")
                         time.sleep(60)
 
                 # update capital after fees & save reserve
@@ -215,11 +222,11 @@ def main_loop():
                 fee_est = calculate_total_gas_fee(gross_return) or 0
                 capital_usd = round(gross_return - fee_est, 6)
                 capital_usd = save_gas_reserve_after_trade(capital_usd, reserve_pct=0.0009)
-                send_telegram_message(f"[INFO] Updated capital after fees & reserve: ${capital_usd:.6f} (fees est ${fee_est:.6f})")
+                safe_send_telegram(f"[INFO] Updated capital after fees & reserve: ${capital_usd:.6f} (fees est ${fee_est:.6f})")
 
                 current_invests += 1
             except Exception as e:
-                send_telegram_message(f"[!] Main loop exception: {e}\n{traceback.format_exc()}")
+                safe_send_telegram(f"[!] Main loop exception: {e}\n{traceback.format_exc()}")
                 time.sleep(10)
 
         cycle_count += 1
@@ -227,9 +234,8 @@ def main_loop():
         now = datetime.utcnow()
         next_midnight = datetime(now.year, now.month, now.day) + timedelta(days=1)
         sleep_seconds = (next_midnight - now).total_seconds()
-        send_telegram_message(f"[*] Day finished. Sleeping {int(sleep_seconds)} seconds until next UTC midnight.")
+        safe_send_telegram(f"[*] Day finished. Sleeping {int(sleep_seconds)} seconds until next UTC midnight.")
         time.sleep(sleep_seconds)
-
 
 def _telethon_runner():
     """
@@ -240,8 +246,7 @@ def _telethon_runner():
         with client:
             client.run_until_disconnected()
     except Exception as e:
-        send_telegram_message(f"[!] Telethon runner crashed: {e}")
-
+        safe_send_telegram(f"[!] Telethon runner crashed: {e}")
 
 # resilient runner that auto reconnects Telethon if needed
 def start_bot():
@@ -263,14 +268,13 @@ def start_bot():
             # If main_loop exits naturally, pause briefly then loop (or break)
             time.sleep(3)
         except (errors.RPCError, ConnectionResetError, Exception) as e:
-            send_telegram_message(f"[!] Bot disconnected / crashed: {e}. Restarting in 15s.")
+            safe_send_telegram(f"[!] Bot disconnected / crashed: {e}. Restarting in 15s.")
             try:
                 client.disconnect()
             except Exception:
                 pass
             time.sleep(15)
             continue
-
 
 if __name__ == "__main__":
     start_bot()
