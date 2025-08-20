@@ -18,7 +18,15 @@ from utils import (
     jupiter_sell,
     calculate_total_gas_fee,
     save_gas_reserve_after_trade,
+    detect_network_congestion,
+    get_priority_fee,
+    logger as logger,
     # get_current_daily_limit  # note: implemented below if missing
+)
+
+from reports import (
+    record_buy,
+    record_sell,
 )
 
 # Load environment
@@ -72,7 +80,10 @@ def safe_send_telegram(text: str):
         send_telegram_message(text)
     except Exception as e:
         # fallback to printing; don't let messaging failures crash the bot
-        print(f"[!] safe_send_telegram failed: {e} | msg: {text}")
+        try:
+            logger.warning(f"[!] safe_send_telegram failed: {e} | msg: {text}")
+        except Exception:
+            print(f"[!] safe_send_telegram failed: {e} | msg: {text}")
 
 def read_from_target_channel(limit: int = 5):
     """
@@ -258,6 +269,14 @@ def main_loop():
                     safe_send_telegram("[!] Invalid SOL amount, skipping")
                     continue
 
+                # compute tip that will be used (estimate using current congestion heuristic)
+                try:
+                    _congestion = detect_network_congestion()
+                    _priority_fee = get_priority_fee(_congestion)
+                except Exception:
+                    _congestion = False
+                    _priority_fee = None
+
                 # perform buy (real vs DRY)
                 if DRY_RUN:
                     safe_send_telegram(f"[DRY RUN] Would buy {ca} for {amount_sol} SOL (${capital_usd})")
@@ -268,6 +287,13 @@ def main_loop():
                     safe_send_telegram(f"[!] Buy failed for {ca}; skipping sell monitor")
                     # If buy failed, we leave it marked processed to avoid immediate re-buy (keeps previous behavior)
                     continue
+
+                # record buy in reports (use UTC iso format)
+                buy_time_iso = datetime.utcnow().isoformat() + "Z"
+                try:
+                    record_buy(ca, None, mcap, buy_time_iso, capital_usd, _priority_fee)
+                except Exception as e:
+                    safe_send_telegram(f"[!] record_buy failed: {e}")
 
                 # mark we are holding now
                 if not DRY_RUN:
@@ -294,7 +320,14 @@ def main_loop():
                                 safe_send_telegram(f"[DRY RUN] Would sell {ca} now at MC ${cur_mc:,.0f} (take profit)")
                                 sell_sig = None
                                 sold = True
+                                sell_priority = _priority_fee
                             else:
+                                # compute tip estimate at sell time
+                                try:
+                                    _sell_congestion = detect_network_congestion()
+                                    sell_priority = get_priority_fee(_sell_congestion)
+                                except Exception:
+                                    sell_priority = None
                                 sell_sig = jupiter_sell(ca)
                                 if sell_sig:
                                     safe_send_telegram(f"[SELL] CA `{ca}` sold at MC ${cur_mc:,.0f} | tx: {sell_sig} (take profit)")
@@ -308,7 +341,13 @@ def main_loop():
                                 safe_send_telegram(f"[DRY RUN] Would sell {ca} now at MC ${cur_mc:,.0f} (stop loss)")
                                 sell_sig = None
                                 sold = True
+                                sell_priority = _priority_fee
                             else:
+                                try:
+                                    _sell_congestion = detect_network_congestion()
+                                    sell_priority = get_priority_fee(_sell_congestion)
+                                except Exception:
+                                    sell_priority = None
                                 sell_sig = jupiter_sell(ca)
                                 if sell_sig:
                                     safe_send_telegram(f"[STOP-LOSS] CA `{ca}` sold at MC ${cur_mc:,.0f} | tx: {sell_sig}")
@@ -331,8 +370,18 @@ def main_loop():
                 # update capital after fees & save reserve
                 gross_return = capital_usd * REQUIRED_MULTIPLIER
                 fee_est = calculate_total_gas_fee(gross_return) or 0
-                capital_usd = round(gross_return - fee_est, 6)
-                capital_usd = save_gas_reserve_after_trade(capital_usd, reserve_pct=0.0009)
+                new_capital = round(gross_return - fee_est, 6)
+                # profit is net return minus invested amount
+                profit_usd = round(new_capital - capital_usd, 6)
+                capital_usd = save_gas_reserve_after_trade(new_capital, reserve_pct=0.0009)
+
+                # record sell in reports
+                sell_time_iso = datetime.utcnow().isoformat() + "Z"
+                try:
+                    record_sell(ca, cur_mc, sell_time_iso, profit_usd, sell_priority)
+                except Exception as e:
+                    safe_send_telegram(f"[!] record_sell failed: {e}")
+
                 safe_send_telegram(f"[INFO] Updated capital after fees & reserve: ${capital_usd:.6f} (fees est ${fee_est:.6f})")
 
                 current_invests += 1
