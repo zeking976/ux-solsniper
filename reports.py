@@ -54,17 +54,14 @@ def resolve_token_name(contract_address: str) -> Optional[str]:
         r = requests.get(base, headers=headers, timeout=10)
         r.raise_for_status()
         data = r.json()
-        # Prefer first pair entry if available
         if isinstance(data, dict):
             pairs = data.get("pairs") or []
             if pairs and isinstance(pairs, list):
                 p0 = pairs[0]
-                # Try baseToken.name or baseToken.symbol
                 base_token = p0.get("baseToken") or {}
                 name = base_token.get("name") or base_token.get("symbol")
                 if name:
                     return str(name)
-            # Some responses use "pair"
             pair = data.get("pair") or {}
             base_token = pair.get("baseToken") or {}
             name = base_token.get("name") or base_token.get("symbol")
@@ -103,28 +100,32 @@ def save_logs(logs: List[Dict[str, Any]]) -> None:
 # -------------------------
 # Recording + Notifications
 # -------------------------
-def send_buy_notification(token: str, coin_name: str, amount_usd: float, buy_mcap: Optional[float]) -> None:
+def send_buy_notification(token: str, coin_name: str, amount_usd: float, buy_mcap: Optional[float], priority_fee_sol: Optional[float]) -> None:
     name_display = coin_name or "N/A"
     mc_text = f"${buy_mcap:,.0f}" if isinstance(buy_mcap, (int, float)) else "N/A"
+    tip_text = f"{priority_fee_sol:.3f} SOL" if priority_fee_sol is not None else "N/A"
     msg = (
         f"✅ *BUY EXECUTED*\n"
         f"• Coin: *{name_display}*\n"
         f"• CA: {md_code(token)}\n"
         f"• Amount: ${amount_usd:.2f}\n"
-        f"• Market Cap @ Buy: {mc_text}"
+        f"• Market Cap @ Buy: {mc_text}\n"
+        f"• Tip Paid: {tip_text}"
     )
     send_telegram_message(msg)
 
-def send_sell_notification(token: str, coin_name: str, sell_mcap: Optional[float], profit_usd: Optional[float]) -> None:
+def send_sell_notification(token: str, coin_name: str, sell_mcap: Optional[float], profit_usd: Optional[float], priority_fee_sol: Optional[float]) -> None:
     name_display = coin_name or "N/A"
     mc_text = f"${sell_mcap:,.0f}" if isinstance(sell_mcap, (int, float)) else "N/A"
     profit_text = f"${float(profit_usd):.2f}" if profit_usd is not None else "N/A"
+    tip_text = f"{priority_fee_sol:.3f} SOL" if priority_fee_sol is not None else "N/A"
     msg = (
         f"🟣 *SELL EXECUTED*\n"
         f"• Coin: *{name_display}*\n"
         f"• CA: {md_code(token)}\n"
         f"• Market Cap @ Sell: {mc_text}\n"
-        f"• Profit: {profit_text}"
+        f"• Profit: {profit_text}\n"
+        f"• Tip Paid: {tip_text}"
     )
     send_telegram_message(msg)
 
@@ -134,10 +135,6 @@ def record_buy(token: str,
                buy_time: str,
                amount_usd: float,
                priority_fee_sol: Optional[float]) -> None:
-    """
-    Record a buy and immediately notify Telegram with coin name + CA.
-    If coin_name is missing, try to resolve it via Dexscreener.
-    """
     if not coin_name:
         resolved = resolve_token_name(token)
         if resolved:
@@ -148,26 +145,23 @@ def record_buy(token: str,
         "buy_market_cap": buy_market_cap,
         "buy_time": buy_time,
         "amount_usd": amount_usd,
-        "priority_fee": priority_fee_sol,
+        "buy_priority_fee": priority_fee_sol,
         "sell_market_cap": None,
         "sell_time": None,
         "profit_usd": None,
+        "sell_priority_fee": None,
         "date": str(datetime.datetime.utcnow().date())
     }
     logs = load_logs()
     logs.append(entry)
     save_logs(logs)
-    # Notify with CA + coin name (explicit requirement)
-    send_buy_notification(token, entry["coin_name"], amount_usd, buy_market_cap)
+    send_buy_notification(token, entry["coin_name"], amount_usd, buy_market_cap, priority_fee_sol)
 
 def record_sell(token: str,
                 sell_market_cap: Optional[float],
                 sell_time: str,
-                profit_usd: Optional[float]) -> None:
-    """
-    Record a sell and immediately notify Telegram with coin name + CA.
-    Will attach to the most recent unsold entry for the given token.
-    """
+                profit_usd: Optional[float],
+                priority_fee_sol: Optional[float]) -> None:
     logs = load_logs()
     coin_name_for_msg = "N/A"
     for entry in reversed(logs):
@@ -175,33 +169,51 @@ def record_sell(token: str,
             entry["sell_market_cap"] = sell_market_cap
             entry["sell_time"] = sell_time
             entry["profit_usd"] = profit_usd
+            entry["sell_priority_fee"] = priority_fee_sol
             coin_name_for_msg = entry.get("coin_name") or "N/A"
             break
     save_logs(logs)
-    # If we still don't have a coin name, try resolving now
     if not coin_name_for_msg or coin_name_for_msg == "N/A":
         resolved = resolve_token_name(token)
         if resolved:
             coin_name_for_msg = resolved
-    send_sell_notification(token, coin_name_for_msg, sell_market_cap, profit_usd)
+    send_sell_notification(token, coin_name_for_msg, sell_market_cap, profit_usd, priority_fee_sol)
 
 # -------------------------
 # Reporting
 # -------------------------
 def generate_report(logs: List[Dict[str, Any]]) -> str:
     total_profit = 0.0
+    total_tips = 0.0
+    normal_tips = 0.0
+    congestion_tips = 0.0
     lines = []
+
     for e in logs:
         profit = float(e.get("profit_usd") or 0)
         total_profit += profit
+
+        buy_fee = e.get("buy_priority_fee") or 0
+        sell_fee = e.get("sell_priority_fee") or 0
+        total_tips += buy_fee + sell_fee
+
+        for fee in [buy_fee, sell_fee]:
+            if fee >= 0.2:
+                congestion_tips += fee
+            elif fee > 0:
+                normal_tips += fee
+
         coin_name = e.get("coin_name") or "N/A"
         lines.append(
             f"🔹 *{coin_name}* | CA: {md_code(e.get('token', ''))} | "
             f"Buy: {e.get('buy_time') or 'N/A'} | "
             f"Sell: {e.get('sell_time') or 'N/A'} | "
-            f"Profit: ${profit:.2f}"
+            f"Profit: ${profit:.2f} | "
+            f"Tips: {(buy_fee + sell_fee):.3f} SOL"
         )
+
     lines.append(f"\n*Total profit:* ${round(total_profit, 2):.2f}")
+    lines.append(f"*Total tips paid:* {total_tips:.3f} SOL (Normal: {normal_tips:.3f} | Congestion: {congestion_tips:.3f})")
     return "\n".join(lines)
 
 def send_daily_report() -> None:
