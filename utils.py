@@ -20,24 +20,27 @@ from solana.rpc.types import TxOpts
 # Load env
 load_dotenv(dotenv_path="t.env")
 
+# Logging
 import logging
 from logging.handlers import RotatingFileHandler
+import os
 
-# Logging setup
-LOG_FILE = "bot.log"
-logger = logging.getLogger("ux-solsniper")
-logger.setLevel(logging.INFO)
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logger = logging.getLogger("ux_solsniper")
+logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
 
-# Rotating handler → 5 MB max per file, keep last 7 backups
-handler = RotatingFileHandler(LOG_FILE, maxBytes=5*1024*1024, backupCount=7)
-formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-handler.setFormatter(formatter)
-logger.addHandler(handler)
+if not logger.handlers:
+    # Rotating log file handler (5 MB max, keep 5 backups)
+    fh = RotatingFileHandler("bot.log", maxBytes=5*1024*1024, backupCount=5)
+    fh.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
 
-# Optional: also print to console
-console = logging.StreamHandler()
-console.setFormatter(formatter)
-logger.addHandler(console)
+    # Console output
+    sh = logging.StreamHandler()
+    sh.setFormatter(formatter)
+    logger.addHandler(sh)
 
 # -------------------------
 # ENV VAR LOADER
