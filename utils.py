@@ -30,8 +30,10 @@ logger = logging.getLogger("ux_solsniper")
 logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
 
 if not logger.handlers:
-    # Rotating log file handler (5 MB max, keep 5 backups)
-    fh = RotatingFileHandler("bot.log", maxBytes=5*1024*1024, backupCount=5)
+    # Rotating log file handler (5 MB max, keep 5 backups, UTF-8 safe)
+    fh = RotatingFileHandler(
+        "bot.log", maxBytes=5*1024*1024, backupCount=5, encoding="utf-8"
+    )
     fh.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
     formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
     fh.setFormatter(formatter)
