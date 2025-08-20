@@ -46,6 +46,8 @@ def get_current_daily_limit():
             daily_limits = [5, 4]
     except Exception:
         daily_limits = [5, 4]
+    if len(daily_limits) == 1:
+        return daily_limits[0]
     day_index = datetime.utcnow().toordinal() % len(daily_limits)
     return int(daily_limits[day_index])
 
@@ -71,7 +73,6 @@ def read_from_target_channel(limit: int = 5):
     Works in Termux/VPS because we call Telethon via the running client loop.
     """
     try:
-        # ensure client is connected; get_messages returns most recent first
         msgs = client.loop.run_until_complete(client.get_messages(TARGET_CHANNEL_ID, limit=limit))
         out = []
         for m in msgs:
@@ -88,11 +89,9 @@ def read_from_target_channel(limit: int = 5):
 async def new_message_handler(event):
     try:
         text = event.message.message or ""
-        # look for patterns like "CA:" or "Contract:" or plain pubkey
         if "CA:" in text:
             ca = text.split("CA:")[1].strip().split()[0]
         else:
-            # fallback: find 32-44 char base58-looking string
             parts = text.strip().split()
             ca = None
             for p in parts:
@@ -100,7 +99,6 @@ async def new_message_handler(event):
                     ca = p.strip()
                     break
         if ca:
-            # ensure not processed and valid
             from utils import is_valid_solana_address
             if is_valid_solana_address(ca) and not is_ca_processed(ca):
                 found_contracts.append(ca)
@@ -109,12 +107,10 @@ async def new_message_handler(event):
         safe_send_telegram(f"[!] Error parsing new message: {e}")
 
 def pick_next_contract(limit_checks=5):
-    # check pending found_contracts first
     while found_contracts:
         candidate = found_contracts.pop(0)
         if not is_ca_processed(candidate):
             return candidate
-    # fallback read latest messages
     from utils import is_valid_solana_address
     msgs = read_from_target_channel(limit=limit_checks)
     for m in msgs:
@@ -141,7 +137,6 @@ def main_loop():
         safe_send_telegram(f"[*] Starting cycle {cycle_count+1}/{CYCLE_LIMIT} | Daily limit: {daily_limit}")
         while current_invests < daily_limit:
             try:
-                # pick next CA
                 ca = None
                 pick_waits = 0
                 while not ca:
@@ -154,10 +149,8 @@ def main_loop():
                             pick_waits = 0
                         else:
                             time.sleep(10)
-                # mark processed early to avoid duplicate buys
                 save_processed_ca(ca)
 
-                # fetch market cap
                 mcap = None
                 for _ in range(3):
                     mcap = get_market_cap_from_dexscreener(ca)
@@ -168,13 +161,11 @@ def main_loop():
                     safe_send_telegram(f"[!] Could not get market cap for {ca}, skipping")
                     continue
 
-                # compute amount (in SOL)
                 amount_sol = get_sol_amount_for_usd(capital_usd)
                 if amount_sol <= 0:
                     safe_send_telegram("[!] Invalid SOL amount, skipping")
                     continue
 
-                # perform buy (real vs DRY)
                 if DRY_RUN:
                     safe_send_telegram(f"[DRY RUN] Would buy {ca} for {amount_sol} SOL (${capital_usd})")
                     buy_sig = None
@@ -186,38 +177,47 @@ def main_loop():
 
                 safe_send_telegram(f"[BUY] CA `{ca}` invested ${capital_usd:.2f} ({amount_sol} SOL) | tx: {buy_sig or 'DRY'} | MC at buy: ${mcap:,.0f}")
 
-                # monitor for target MC
                 target_mc = mcap * REQUIRED_MULTIPLIER
+                stop_loss_mc = mcap * 0.8
                 sold = False
                 while not sold:
                     try:
                         cur_mc = get_market_cap_from_dexscreener(ca)
                         if cur_mc is None:
-                            # wait and retry
                             time.sleep(60)
                             continue
                         if cur_mc >= target_mc:
-                            # sell
                             if DRY_RUN:
-                                safe_send_telegram(f"[DRY RUN] Would sell {ca} now at MC ${cur_mc:,.0f}")
+                                safe_send_telegram(f"[DRY RUN] Would sell {ca} now at MC ${cur_mc:,.0f} (take profit)")
                                 sell_sig = None
                                 sold = True
                             else:
                                 sell_sig = jupiter_sell(ca)
                                 if sell_sig:
-                                    safe_send_telegram(f"[SELL] CA `{ca}` sold at MC ${cur_mc:,.0f} | tx: {sell_sig}")
+                                    safe_send_telegram(f"[SELL] CA `{ca}` sold at MC ${cur_mc:,.0f} | tx: {sell_sig} (take profit)")
                                     sold = True
                                 else:
                                     safe_send_telegram(f"[!] Sell failed for {ca}; retrying in 2 minutes")
                                     time.sleep(120)
+                        elif cur_mc <= stop_loss_mc:
+                            if DRY_RUN:
+                                safe_send_telegram(f"[DRY RUN] Would sell {ca} now at MC ${cur_mc:,.0f} (stop loss)")
+                                sell_sig = None
+                                sold = True
+                            else:
+                                sell_sig = jupiter_sell(ca)
+                                if sell_sig:
+                                    safe_send_telegram(f"[STOP-LOSS] CA `{ca}` sold at MC ${cur_mc:,.0f} | tx: {sell_sig}")
+                                    sold = True
+                                else:
+                                    safe_send_telegram(f"[!] Stop-loss sell failed for {ca}; retrying in 2 minutes")
+                                    time.sleep(120)
                         else:
-                            # wait
                             time.sleep(60)
                     except Exception as e:
                         safe_send_telegram(f"[!] Monitoring loop exception: {e}")
                         time.sleep(60)
 
-                # update capital after fees & save reserve
                 gross_return = capital_usd * REQUIRED_MULTIPLIER
                 fee_est = calculate_total_gas_fee(gross_return) or 0
                 capital_usd = round(gross_return - fee_est, 6)
@@ -230,7 +230,6 @@ def main_loop():
                 time.sleep(10)
 
         cycle_count += 1
-        # Sleep until next UTC midnight (calculate remaining)
         now = datetime.utcnow()
         next_midnight = datetime(now.year, now.month, now.day) + timedelta(days=1)
         sleep_seconds = (next_midnight - now).total_seconds()
@@ -238,34 +237,21 @@ def main_loop():
         time.sleep(sleep_seconds)
 
 def _telethon_runner():
-    """
-    Runs Telethon's event loop so @client.on handlers fire while main_loop() runs.
-    Uses a daemon thread so it works in Termux and on VULTR.
-    """
     try:
         with client:
             client.run_until_disconnected()
     except Exception as e:
         safe_send_telegram(f"[!] Telethon runner crashed: {e}")
 
-# resilient runner that auto reconnects Telethon if needed
 def start_bot():
     while True:
         try:
-            # Ensure session connects before spawning runner thread
             client.connect()
             if not client.is_user_authorized():
-                # Will prompt device login on first-ever run; for headless, use code sent to your TG
                 client.start()
-
-            # Start Telethon event loop in background so handlers work
             t = threading.Thread(target=_telethon_runner, daemon=True)
             t.start()
-
-            # Run main trading loop in the main thread
             main_loop()
-
-            # If main_loop exits naturally, pause briefly then loop (or break)
             time.sleep(3)
         except (errors.RPCError, ConnectionResetError, Exception) as e:
             safe_send_telegram(f"[!] Bot disconnected / crashed: {e}. Restarting in 15s.")
