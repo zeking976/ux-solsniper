@@ -169,7 +169,7 @@ def get_market_cap(ca: str) -> Optional[float]:
         return None
 
 # -------------------------
-# Network congestion & priority fee (manual via env)
+# Network congestion & priority fee
 # -------------------------
 MANUAL_CONGESTION = int(os.getenv("MANUAL_CONGESTION", "0"))  # 0 = normal, 1 = congested
 
