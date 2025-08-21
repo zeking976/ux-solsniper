@@ -4,13 +4,13 @@ import datetime
 import requests
 from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
+from utils import resolve_token_name, md_code
 
-# Load .env (Termux/VULTR friendly)
+# Load environment
 load_dotenv(dotenv_path="t.env")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-DEXSCREENER_API_KEY = os.getenv("DEXSCREENER_API_KEY", "")
 
 # Keep the log file in repo root; .gitignore can exclude it if you prefer
 REPORTS_FILE = "trade_logs.json"
@@ -32,44 +32,6 @@ def send_telegram_message(text: str) -> None:
     except Exception as e:
         print("[!] Failed to send message:", e)
 
-def md_code(s: str) -> str:
-    """Wrap a string in backticks for Markdown code, with minimal escaping."""
-    if s is None:
-        s = ""
-    return f"`{str(s).replace('`', '\\`')}`"
-
-# -------------------------
-# Dexscreener helper (optional)
-# -------------------------
-def resolve_token_name(contract_address: str) -> Optional[str]:
-    """
-    Resolve a token name from Dexscreener for better reports if coin_name wasn't provided.
-    Returns None if it cannot be resolved.
-    """
-    try:
-        base = f"https://api.dexscreener.io/latest/dex/pairs/solana/{contract_address}"
-        headers = {}
-        if DEXSCREENER_API_KEY:
-            headers["Authorization"] = f"Bearer {DEXSCREENER_API_KEY}"
-        r = requests.get(base, headers=headers, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-        if isinstance(data, dict):
-            pairs = data.get("pairs") or []
-            if pairs and isinstance(pairs, list):
-                p0 = pairs[0]
-                base_token = p0.get("baseToken") or {}
-                name = base_token.get("name") or base_token.get("symbol")
-                if name:
-                    return str(name)
-            pair = data.get("pair") or {}
-            base_token = pair.get("baseToken") or {}
-            name = base_token.get("name") or base_token.get("symbol")
-            if name:
-                return str(name)
-    except Exception:
-        pass
-    return None
 
 # -------------------------
 # JSON log helpers
@@ -97,6 +59,7 @@ def save_logs(logs: List[Dict[str, Any]]) -> None:
     except Exception as e:
         print("[!] Failed to save logs:", e)
 
+
 # -------------------------
 # Recording + Notifications
 # -------------------------
@@ -114,6 +77,7 @@ def send_buy_notification(token: str, coin_name: str, amount_usd: float, buy_mca
     )
     send_telegram_message(msg)
 
+
 def send_sell_notification(token: str, coin_name: str, sell_mcap: Optional[float], profit_usd: Optional[float], priority_fee_sol: Optional[float]) -> None:
     name_display = coin_name or "N/A"
     mc_text = f"${sell_mcap:,.0f}" if isinstance(sell_mcap, (int, float)) else "N/A"
@@ -128,6 +92,7 @@ def send_sell_notification(token: str, coin_name: str, sell_mcap: Optional[float
         f"• Tip Paid: {tip_text}"
     )
     send_telegram_message(msg)
+
 
 def record_buy(token: str,
                coin_name: Optional[str],
@@ -157,6 +122,7 @@ def record_buy(token: str,
     save_logs(logs)
     send_buy_notification(token, entry["coin_name"], amount_usd, buy_market_cap, priority_fee_sol)
 
+
 def record_sell(token: str,
                 sell_market_cap: Optional[float],
                 sell_time: str,
@@ -173,11 +139,12 @@ def record_sell(token: str,
             coin_name_for_msg = entry.get("coin_name") or "N/A"
             break
     save_logs(logs)
-    if not coin_name_for_msg or coin_name_for_msg == "N/A":
+    if coin_name_for_msg == "N/A":
         resolved = resolve_token_name(token)
         if resolved:
             coin_name_for_msg = resolved
     send_sell_notification(token, coin_name_for_msg, sell_market_cap, profit_usd, priority_fee_sol)
+
 
 # -------------------------
 # Reporting
@@ -216,6 +183,7 @@ def generate_report(logs: List[Dict[str, Any]]) -> str:
     lines.append(f"*Total tips paid:* {total_tips:.3f} SOL (Normal: {normal_tips:.3f} | Congestion: {congestion_tips:.3f})")
     return "\n".join(lines)
 
+
 def send_daily_report() -> None:
     today = str(datetime.datetime.utcnow().date())
     logs = load_logs()
@@ -224,6 +192,7 @@ def send_daily_report() -> None:
         send_telegram_message("🗓️ No trades today.")
         return
     send_telegram_message("📅 *Daily Report*\n\n" + generate_report(today_logs))
+
 
 def send_monthly_report() -> None:
     now = datetime.datetime.utcnow()
@@ -240,6 +209,7 @@ def send_monthly_report() -> None:
         send_telegram_message("🗓️ No trades this month.")
         return
     send_telegram_message("📅 *Monthly Report*\n\n" + generate_report(month_logs))
+
 
 # -------------------------
 # CLI
