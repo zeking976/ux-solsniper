@@ -1,440 +1,146 @@
 import os
+import json
 import time
-import traceback
-import threading
+import random
+import logging
 from datetime import datetime, timedelta
 
+import requests
 from dotenv import load_dotenv
-from telethon import TelegramClient, events, errors
+from telethon.sync import TelegramClient, events
 
-from utils import (
-    get_env_variable,
-    get_market_cap_from_dexscreener,
-    get_sol_amount_for_usd,
-    send_telegram_message,
-    is_ca_processed,
-    save_processed_ca,
-    jupiter_buy,
-    jupiter_sell,
-    calculate_total_gas_fee,
-    save_gas_reserve_after_trade,
-    detect_network_congestion,
-    get_priority_fee,
-    logger as logger,
-    # get_current_daily_limit  # note: implemented below if missing
-)
-
-from reports import (
-    record_buy,
-    record_sell,
-)
+# Local imports
+import utils
 
 # Load environment
-load_dotenv(dotenv_path="t.env")
+dotenv_path = os.path.expanduser("~/t.env")
+load_dotenv(dotenv_path=dotenv_path)
 
-# Required envs (will raise if missing)
-API_ID = int(get_env_variable("TELEGRAM_API_ID"))
-API_HASH = get_env_variable("TELEGRAM_API_HASH")
-TARGET_CHANNEL_ID = int(get_env_variable("TARGET_CHANNEL_ID"))
-INVESTMENT_USD = float(get_env_variable("INVESTMENT_USD"))
-REQUIRED_MULTIPLIER = float(get_env_variable("REQUIRED_MULTIPLIER"))
-CYCLE_LIMIT = int(get_env_variable("CYCLE_LIMIT"))
-# DRY_RUN stored as string "0" or "1" in t.env — use get_env_variable so missing var is noticed
-DRY_RUN = get_env_variable("DRY_RUN", required=False, default="0") == "1"
+# Env vars
+API_ID = int(os.getenv("TELEGRAM_API_ID"))
+API_HASH = os.getenv("TELEGRAM_API_HASH")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TARGET_CHANNEL_ID = int(os.getenv("TARGET_CHANNEL_ID"))
+DRY_RUN = int(os.getenv("DRY_RUN", "1"))  # 1 = simulate, 0 = real
+RPC_URL = os.getenv("SOLANA_RPC")
 
-# Telethon client (non-interactive) - uses session file 'telethon.session'
-client = TelegramClient("telethon", API_ID, API_HASH, device_model="ux-solsniper")
+# Logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
 
-# Helper: parse daily limits env (fallback to 5,4)
-def get_current_daily_limit():
-    try:
-        daily_limits = os.getenv("DAILY_LIMITS", "5,4").split(",")
-        daily_limits = [int(x.strip()) for x in daily_limits if x.strip()]
-        if not daily_limits:
-            daily_limits = [5, 4]
-    except Exception:
-        daily_limits = [5, 4]
-    if len(daily_limits) == 1:
-        return daily_limits[0]
-    day_index = datetime.utcnow().toordinal() % len(daily_limits)
-    return int(daily_limits[day_index])
+# Globals
+DAILY_START_CAPITAL = 25  # Starting capital in USD
+INVESTMENT_MULTIPLIER = 2  # Target 2x sell
+GAS_BUFFER = 0.009  # 0.9% reserved for gas
+session_name = "session"
 
-# Run state
-cycle_count = 0
-capital_usd = INVESTMENT_USD
+# Telegram client
+client = TelegramClient(session_name, API_ID, API_HASH)
 
-# Event handler collects new contract addresses as they show
-# Store tuples: (mint, posted_ts_epoch)
-found_contracts = []
 
-# Track whether the bot currently holds a position
-holding_position = False
-# Whether the bot has performed the first buy in this process run
-first_buy_done = False
-# Timestamp (epoch seconds) of the last successful sell (TP or SL). Initialized to 0 -> allows first buy.
-last_sell_time = 0.0
-
-# Safe sender wrapper so Telegram errors do not crash the bot
-def safe_send_telegram(text: str):
-    try:
-        send_telegram_message(text)
-    except Exception as e:
-        # fallback to printing; don't let messaging failures crash the bot
-        try:
-            logger.warning(f"[!] safe_send_telegram failed: {e} | msg: {text}")
-        except Exception:
-            print(f"[!] safe_send_telegram failed: {e} | msg: {text}")
-
-def read_from_target_channel(limit: int = 5):
+async def handle_new_message(event):
     """
-    Local helper to fetch latest messages from TARGET_CHANNEL_ID.
-    Returns a list of (message_text, message_date) tuples (most recent first).
-    Works in Termux/VPS because we call Telethon via the running client loop.
+    Triggered whenever a new message is detected in the target channel.
+    Extract contract address and start buy/sell cycle.
     """
     try:
-        msgs = client.loop.run_until_complete(client.get_messages(TARGET_CHANNEL_ID, limit=limit))
-        out = []
-        for m in msgs:
-            try:
-                txt = m.message or ""
-                # Telethon returns a datetime in m.date
-                dt = getattr(m, "date", None)
-                # Convert to utc epoch seconds if datetime provided
-                ts = None
-                if dt is not None:
-                    try:
-                        ts = dt.timestamp()
-                    except Exception:
-                        ts = time.time()
-                else:
-                    ts = time.time()
-                out.append((txt, ts))
-            except Exception:
-                out.append(("", time.time()))
-        return out
-    except Exception as e:
-        safe_send_telegram(f"[!] read_from_target_channel error: {e}")
-        return []
+        message = event.message.message
+        ca = utils.extract_contract_address(message)
+        if not ca:
+            return
 
-def extract_mint_from_start_link(text: str):
-    """
-    The channel posts contain a '⚡Buy Now' which leads to a link like:
-    https://t.me/Soul_Sniper_Bot?start=15_3tz3HtW9LogbBBV...
-    We must extract the portion after the last underscore as the mint (32-44 chars).
-    Returns the mint string or None.
-    """
-    try:
-        # find '?start=' occurrences
-        if "?start=" in text:
-            parts = text.split("?start=")
-            for p in parts[1:]:
-                # p may be like "15_3tz3H... moretext" or "15_3tz3H..."
-                # take up to first whitespace / newline
-                token = p.split()[0].strip()
-                if "_" in token:
-                    candidate = token.split("_")[-1]
-                else:
-                    # fallback: take token if length matches mint
-                    candidate = token
-                # cleanup punctuation
-                candidate = candidate.strip().rstrip(".,;:)")
-                if 32 <= len(candidate) <= 44:
-                    return candidate
-        # fallback: check raw message for a 32-44 char base58-like token
-        parts = text.strip().split()
-        for p in parts:
-            p2 = p.strip().rstrip(".,;:)")
-            if 32 <= len(p2) <= 44:
-                return p2
-    except Exception as e:
-        safe_send_telegram(f"[!] extract_mint_from_start_link error: {e}")
-    return None
+        logger.info(f"Detected CA: {ca}")
 
-@client.on(events.NewMessage(chats=TARGET_CHANNEL_ID))
-async def new_message_handler(event):
-    try:
-        text = event.message.message or ""
-        # try to extract mint via the start link pattern
-        ca = extract_mint_from_start_link(text)
-        # Also capture the posted time (epoch)
-        post_ts = None
-        try:
-            post_dt = getattr(event.message, "date", None)
-            post_ts = post_dt.timestamp() if post_dt else time.time()
-        except Exception:
-            post_ts = time.time()
+        # Decide investment amount for the day
+        usd_invest = utils.get_today_investment()
+        sol_invest = utils.usd_to_sol(usd_invest, RPC_URL)
 
-        if ca:
-            from utils import is_valid_solana_address
-            if is_valid_solana_address(ca) and not is_ca_processed(ca):
-                # Append so pick_next_contract can evaluate it
-                found_contracts.append((ca, post_ts))
-                safe_send_telegram(f"[+] Detected new CA: `{ca}` posted at {datetime.utcfromtimestamp(post_ts).isoformat()}Z")
-    except Exception as e:
-        safe_send_telegram(f"[!] Error parsing new message: {e}")
+        # Deduct buffer for gas
+        sol_after_fees = sol_invest * (1 - GAS_BUFFER)
 
-def pick_next_contract(limit_checks=5):
-    """
-    Picks the next contract to attempt.  Behavior rules:
-    - Skip contracts already processed (is_ca_processed)
-    - Skip contracts that were posted while bot was holding (posted_ts <= last_sell_time)
-    - If bot is currently holding (holding_position==True) and the first buy already happened,
-      do NOT pick any contract (return None)
-    - Returns a mint string or None
-    """
-    global found_contracts, holding_position, last_sell_time, first_buy_done
+        # Execute buy
+        tx_buy = None
+        if DRY_RUN:
+            logger.info(f"[DRY RUN] Buying {usd_invest}$ worth of token at {ca}")
+        else:
+            tx_buy = utils.buy_token(ca, sol_after_fees, congestion=False)
 
-    # If holding and we've already done the first buy, do not pick new contracts
-    if holding_position and first_buy_done:
-        return None
-
-    # First check the in-memory queue
-    while found_contracts:
-        candidate, posted_ts = found_contracts.pop(0)
-        # skip if processed
-        if is_ca_processed(candidate):
-            continue
-        # Only consider if posted after last sell time (skip coins posted while we were holding previously)
-        if posted_ts and posted_ts <= last_sell_time:
-            continue
-        # Candidate passes checks
-        return candidate
-
-    # fallback: read latest messages from the channel (text, ts tuples)
-    from utils import is_valid_solana_address
-    msgs = read_from_target_channel(limit=limit_checks)
-    for m, posted_ts in msgs:
-        if not m:
-            continue
-        ca_cand = extract_mint_from_start_link(m)
-        if not ca_cand:
-            # fallback detection as before
-            parts = m.split()
-            ca_cand = None
-            for p in parts:
-                if 32 <= len(p) <= 44:
-                    ca_cand = p
+        if not DRY_RUN and not tx_buy:
+            logger.error("Buy transaction failed, retrying...")
+            for _ in range(3):
+                time.sleep(2)
+                tx_buy = utils.buy_token(ca, sol_after_fees, congestion=True)
+                if tx_buy:
                     break
-        if ca_cand and is_valid_solana_address(ca_cand) and not is_ca_processed(ca_cand):
-            # Skip if posted while we were holding (posted_ts <= last_sell_time)
-            if posted_ts and posted_ts <= last_sell_time:
-                continue
-            return ca_cand
-    return None
+            if not tx_buy:
+                logger.error("Final buy failed after retries.")
+                return
 
-def main_loop():
-    global cycle_count, capital_usd, holding_position, last_sell_time, first_buy_done
-    while cycle_count < CYCLE_LIMIT:
-        daily_limit = get_current_daily_limit()
-        current_invests = 0
-        safe_send_telegram(f"[*] Starting cycle {cycle_count+1}/{CYCLE_LIMIT} | Daily limit: {daily_limit}")
-        while current_invests < daily_limit:
-            try:
-                # If currently holding and first buy already happened, wait for sell
-                if holding_position and first_buy_done:
-                    safe_send_telegram("[*] Currently holding a position; waiting for sell to complete before scanning new coins.")
-                    time.sleep(30)
-                    continue
+        buy_market_cap = utils.get_market_cap(ca)
+        logger.info(f"Buy market cap: {buy_market_cap}")
 
-                ca = None
-                pick_waits = 0
-                while not ca:
-                    ca = pick_next_contract()
-                    if not ca:
-                        pick_waits += 1
-                        if pick_waits > 30:
-                            safe_send_telegram("[*] No CA found after many attempts — sleeping 2 minutes")
-                            time.sleep(120)
-                            pick_waits = 0
-                        else:
-                            time.sleep(10)
+        # Wait for 2x market cap
+        while True:
+            current_cap = utils.get_market_cap(ca)
+            if current_cap and current_cap >= buy_market_cap * INVESTMENT_MULTIPLIER:
+                break
+            time.sleep(30)
 
-                # At this point we're about to attempt a buy; mark as processed to avoid duplicates
-                save_processed_ca(ca)
+        # Execute sell
+        tx_sell = None
+        if DRY_RUN:
+            logger.info(f"[DRY RUN] Selling token {ca} at 2x market cap")
+        else:
+            tx_sell = utils.sell_token(ca, congestion=False)
 
-                # fetch market cap
-                mcap = None
-                for _ in range(3):
-                    mcap = get_market_cap_from_dexscreener(ca)
-                    if mcap:
-                        break
-                    time.sleep(5)
-                if not mcap:
-                    safe_send_telegram(f"[!] Could not get market cap for {ca}, skipping")
-                    continue
+        if not DRY_RUN and not tx_sell:
+            logger.error("Sell transaction failed, retrying...")
+            for _ in range(3):
+                time.sleep(2)
+                tx_sell = utils.sell_token(ca, congestion=True)
+                if tx_sell:
+                    break
+            if not tx_sell:
+                logger.error("Final sell failed after retries.")
+                return
 
-                # compute amount (in SOL)
-                amount_sol = get_sol_amount_for_usd(capital_usd)
-                if amount_sol <= 0:
-                    safe_send_telegram("[!] Invalid SOL amount, skipping")
-                    continue
+        sell_market_cap = utils.get_market_cap(ca)
+        logger.info(f"Sell market cap: {sell_market_cap}")
 
-                # compute tip that will be used (estimate using current congestion heuristic)
-                try:
-                    _congestion = detect_network_congestion()
-                    _priority_fee = get_priority_fee(_congestion)
-                except Exception:
-                    _congestion = False
-                    _priority_fee = None
+        # Report
+        utils.send_telegram_message(
+            BOT_TOKEN,
+            CHAT_ID,
+            f"✅ Trade Complete\nCA: {ca}\nBuy: {buy_market_cap}\nSell: {sell_market_cap}\nTx Buy: {tx_buy}\nTx Sell: {tx_sell}"
+        )
 
-                # perform buy (real vs DRY)
-                if DRY_RUN:
-                    safe_send_telegram(f"[DRY RUN] Would buy {ca} for {amount_sol} SOL (${capital_usd})")
-                    buy_sig = None
-                else:
-                    buy_sig = jupiter_buy(ca, amount_sol)
-                if not DRY_RUN and not buy_sig:
-                    safe_send_telegram(f"[!] Buy failed for {ca}; skipping sell monitor")
-                    # If buy failed, we leave it marked processed to avoid immediate re-buy (keeps previous behavior)
-                    continue
-
-                # record buy in reports (use UTC iso format)
-                buy_time_iso = datetime.utcnow().isoformat() + "Z"
-                try:
-                    record_buy(ca, None, mcap, buy_time_iso, capital_usd, _priority_fee)
-                except Exception as e:
-                    safe_send_telegram(f"[!] record_buy failed: {e}")
-
-                # mark we are holding now
-                if not DRY_RUN:
-                    holding_position = True
-                    # record that we have now completed the first buy in this run
-                    first_buy_done = True
-
-                safe_send_telegram(f"[BUY] CA `{ca}` invested ${capital_usd:.2f} ({amount_sol} SOL) | tx: {buy_sig or 'DRY'} | MC at buy: ${mcap:,.0f}")
-
-                # monitor for target MC and stop loss
-                target_mc = mcap * REQUIRED_MULTIPLIER
-                stop_loss_mc = mcap * 0.8
-                sold = False
-                while not sold:
-                    try:
-                        cur_mc = get_market_cap_from_dexscreener(ca)
-                        if cur_mc is None:
-                            # wait and retry
-                            time.sleep(60)
-                            continue
-                        # Take profit
-                        if cur_mc >= target_mc:
-                            if DRY_RUN:
-                                safe_send_telegram(f"[DRY RUN] Would sell {ca} now at MC ${cur_mc:,.0f} (take profit)")
-                                sell_sig = None
-                                sold = True
-                                sell_priority = _priority_fee
-                            else:
-                                # compute tip estimate at sell time
-                                try:
-                                    _sell_congestion = detect_network_congestion()
-                                    sell_priority = get_priority_fee(_sell_congestion)
-                                except Exception:
-                                    sell_priority = None
-                                sell_sig = jupiter_sell(ca)
-                                if sell_sig:
-                                    safe_send_telegram(f"[SELL] CA `{ca}` sold at MC ${cur_mc:,.0f} | tx: {sell_sig} (take profit)")
-                                    sold = True
-                                else:
-                                    safe_send_telegram(f"[!] Sell failed for {ca}; retrying in 2 minutes")
-                                    time.sleep(120)
-                        # Stop loss
-                        elif cur_mc <= stop_loss_mc:
-                            if DRY_RUN:
-                                safe_send_telegram(f"[DRY RUN] Would sell {ca} now at MC ${cur_mc:,.0f} (stop loss)")
-                                sell_sig = None
-                                sold = True
-                                sell_priority = _priority_fee
-                            else:
-                                try:
-                                    _sell_congestion = detect_network_congestion()
-                                    sell_priority = get_priority_fee(_sell_congestion)
-                                except Exception:
-                                    sell_priority = None
-                                sell_sig = jupiter_sell(ca)
-                                if sell_sig:
-                                    safe_send_telegram(f"[STOP-LOSS] CA `{ca}` sold at MC ${cur_mc:,.0f} | tx: {sell_sig}")
-                                    sold = True
-                                else:
-                                    safe_send_telegram(f"[!] Stop-loss sell failed for {ca}; retrying in 2 minutes")
-                                    time.sleep(120)
-                        else:
-                            # wait
-                            time.sleep(60)
-                    except Exception as e:
-                        safe_send_telegram(f"[!] Monitoring loop exception: {e}")
-                        time.sleep(60)
-
-                # after sell, clear holding flag and update last_sell_time
-                if not DRY_RUN:
-                    holding_position = False
-                    last_sell_time = time.time()
-
-                # update capital after fees & save reserve
-                gross_return = capital_usd * REQUIRED_MULTIPLIER
-                fee_est = calculate_total_gas_fee(gross_return) or 0
-                new_capital = round(gross_return - fee_est, 6)
-                # profit is net return minus invested amount
-                profit_usd = round(new_capital - capital_usd, 6)
-                capital_usd = save_gas_reserve_after_trade(new_capital, reserve_pct=0.0009)
-
-                # record sell in reports
-                sell_time_iso = datetime.utcnow().isoformat() + "Z"
-                try:
-                    record_sell(ca, cur_mc, sell_time_iso, profit_usd, sell_priority)
-                except Exception as e:
-                    safe_send_telegram(f"[!] record_sell failed: {e}")
-
-                safe_send_telegram(f"[INFO] Updated capital after fees & reserve: ${capital_usd:.6f} (fees est ${fee_est:.6f})")
-
-                current_invests += 1
-            except Exception as e:
-                safe_send_telegram(f"[!] Main loop exception: {e}\n{traceback.format_exc()}")
-                time.sleep(10)
-
-        cycle_count += 1
-        # Sleep until next UTC midnight (calculate remaining)
+        # Sleep until next cycle 00:00 UTC
         now = datetime.utcnow()
-        next_midnight = datetime(now.year, now.month, now.day) + timedelta(days=1)
-        sleep_seconds = (next_midnight - now).total_seconds()
-        safe_send_telegram(f"[*] Day finished. Sleeping {int(sleep_seconds)} seconds until next UTC midnight.")
+        tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        sleep_seconds = (tomorrow - now).total_seconds()
+        logger.info(f"Sleeping for {sleep_seconds/3600:.2f} hours until next cycle.")
         time.sleep(sleep_seconds)
 
-def _telethon_runner():
-    """
-    Runs Telethon's event loop so @client.on handlers fire while main_loop() runs.
-    Uses a daemon thread so it works in Termux and on VULTR.
-    """
-    try:
-        with client:
-            client.run_until_disconnected()
     except Exception as e:
-        safe_send_telegram(f"[!] Telethon runner crashed: {e}")
+        logger.error(f"Error in handle_new_message: {e}")
 
-# resilient runner that auto reconnects Telethon if needed
-def start_bot():
-    while True:
-        try:
-            # Ensure session connects before spawning runner thread
-            client.connect()
-            if not client.is_user_authorized():
-                # Will prompt device login on first-ever run; for headless, use code sent to your TG
-                client.start()
 
-            # Start Telethon event loop in background so handlers work
-            t = threading.Thread(target=_telethon_runner, daemon=True)
-            t.start()
+def main():
+    logger.info("Starting sniper bot...")
 
-            # Run main trading loop in the main thread
-            main_loop()
+    with client:
+        client.add_event_handler(
+            handle_new_message,
+            events.NewMessage(chats=TARGET_CHANNEL_ID)
+        )
+        logger.info("Listening for new messages...")
+        client.run_until_disconnected()
 
-            # If main_loop exits naturally, pause briefly then loop (or break)
-            time.sleep(3)
-        except (errors.RPCError, ConnectionResetError, Exception) as e:
-            safe_send_telegram(f"[!] Bot disconnected / crashed: {e}. Restarting in 15s.")
-            try:
-                client.disconnect()
-            except Exception:
-                pass
-            time.sleep(15)
-            continue
 
 if __name__ == "__main__":
-    start_bot()
+    main()
