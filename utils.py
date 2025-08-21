@@ -190,10 +190,36 @@ def extract_contract_address(text: str) -> Optional[str]:
     """  
     if not text:  
         return None  
-    import re  
-    # Basic base58-ish pattern (letters+digits) length 32-44  
-    m = re.search(r"[A-Za-z0-9]{32,44}", text)  
-    return m.group(0) if m else None  
+    import re
+
+def extract_contract_address(message_text: str = None, message_obj=None) -> Optional[str]:
+    """
+    Extract a 32-44 char base58-like token mint from:
+    1. Plain text messages
+    2. Telegram button links (e.g., t.me/.../start=...)
+    
+    Returns the first found contract address or None.
+    """
+    # 1️⃣ Try plain text first
+    if message_text:
+        m = re.search(r"[A-Za-z0-9]{32,44}", message_text)
+        if m:
+            return m.group(0)
+
+    # 2️⃣ Try button URLs if message object is provided
+    if message_obj and hasattr(message_obj, "reply_markup") and message_obj.reply_markup:
+        try:
+            for row in message_obj.reply_markup.rows:
+                for button in row.buttons:
+                    if hasattr(button, "url") and button.url:
+                        # Match last base58-like string in URL
+                        matches = re.findall(r"[1-9A-HJ-NP-Za-km-z]{32,44}", button.url)
+                        if matches:
+                            return matches[-1]  # take the last string resembling a contract address
+        except Exception as e:
+            logger.error(f"extract_contract_address button parse error: {e}")
+
+    return None  
   
 # -------------------------  
 # Price / conversions  
