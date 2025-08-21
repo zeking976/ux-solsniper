@@ -7,11 +7,11 @@ from telethon.sync import TelegramClient, events
 
 # Local utils
 import utils
-from utils import DRY_RUN
+from utils import DRY_RUN, RPC_URL, GAS_BUFFER, MAX_BUYS_PER_DAY
 
 # Load environment
 dotenv_path = os.path.expanduser("~/t.env")
-utils.load_dotenv(dotenv_path=dotenv_path)  # ensure t.env loaded
+utils.load_env(dotenv_path=dotenv_path)  # ensure t.env loaded
 
 # -------------------------
 # Env vars
@@ -24,9 +24,13 @@ TARGET_CHANNEL_ID = int(os.getenv("TARGET_CHANNEL_ID"))
 
 # Daily capital and multiplier (manual in t.env)
 DAILY_CAPITAL_USD = float(os.getenv("DAILY_CAPITAL_USD", 25))
-INVESTMENT_MULTIPLIER = float(os.getenv("INVESTMENT_MULTIPLIER", 2))  # 2x default
+INVESTMENT_MULTIPLIER = float(os.getenv("INVESTMENT_MULTIPLIER", 2))  # default 2x
 GAS_BUFFER = float(os.getenv("GAS_BUFFER", 0.009))  # 0.9% buffer for gas
 MAX_BUYS_PER_DAY = int(os.getenv("MAX_BUYS_PER_DAY", 5))  # max buy cycles per day
+
+# Manual tipping + congestion fees (loaded from t.env)
+NORMAL_TIP_SOL = float(os.getenv("NORMAL_TIP_SOL", 0.015))
+CONGESTION_TIP_SOL = float(os.getenv("CONGESTION_TIP_SOL", 0.1))
 
 # Logging
 logging.basicConfig(
@@ -45,8 +49,7 @@ def calculate_compound_investment(base_capital: float, current_buy_index: int, m
     Calculate compounded investment for the current buy cycle.
     Example: 3 buys/day: [33%, 33%, 34%] of total capital
     """
-    percent_per_buy = base_capital / max_buys
-    return percent_per_buy
+    return base_capital / max_buys
 
 
 async def handle_new_message(event):
@@ -64,23 +67,24 @@ async def handle_new_message(event):
 
         for buy_index in range(1, MAX_BUYS_PER_DAY + 1):
             usd_invest = calculate_compound_investment(DAILY_CAPITAL_USD, buy_index, MAX_BUYS_PER_DAY)
-            sol_invest = utils.usd_to_sol(usd_invest, utils.RPC_URL)
-            sol_after_fees = sol_invest * (1 - GAS_BUFFER)
+            sol_invest = utils.usd_to_sol(usd_invest, RPC_URL)
 
-            logger.info(f"Buy #{buy_index}: Investing {usd_invest}$ ({sol_after_fees} SOL) into {ca}")
+            # Deduct gas + tipping (manual from t.env)
+            sol_after_fees = sol_invest * (1 - GAS_BUFFER) - NORMAL_TIP_SOL
+
+            logger.info(f"Buy #{buy_index}: Investing {usd_invest}$ ({sol_after_fees:.6f} SOL after fees) into {ca}")
 
             tx_buy = None
             if DRY_RUN:
                 logger.info(f"[DRY RUN] Buying {usd_invest}$ worth of token {ca}")
                 tx_buy = f"SIMULATED_BUY_{buy_index}"
             else:
-                tx_buy = utils.jupiter_buy(ca, sol_after_fees)
-
+                tx_buy = utils.jupiter_buy(ca, sol_after_fees, tip=NORMAL_TIP_SOL)
                 if not tx_buy:
                     logger.warning("Buy failed, retrying 3 times...")
                     for attempt in range(3):
                         time.sleep(2)
-                        tx_buy = utils.jupiter_buy(ca, sol_after_fees, retries=1)
+                        tx_buy = utils.jupiter_buy(ca, sol_after_fees, tip=NORMAL_TIP_SOL)
                         if tx_buy:
                             break
                     if not tx_buy:
@@ -105,12 +109,12 @@ async def handle_new_message(event):
                 logger.info(f"[DRY RUN] Selling token {ca} at {INVESTMENT_MULTIPLIER}x market cap")
                 tx_sell = f"SIMULATED_SELL_{buy_index}"
             else:
-                tx_sell = utils.jupiter_sell(ca)
+                tx_sell = utils.jupiter_sell(ca, tip=NORMAL_TIP_SOL)
                 if not tx_sell:
                     logger.warning("Sell failed, retrying 3 times...")
                     for attempt in range(3):
                         time.sleep(2)
-                        tx_sell = utils.jupiter_sell(ca, retries=1)
+                        tx_sell = utils.jupiter_sell(ca, tip=NORMAL_TIP_SOL)
                         if tx_sell:
                             break
                     if not tx_sell:
