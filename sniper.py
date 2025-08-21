@@ -22,21 +22,18 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 TARGET_CHANNEL_ID = int(os.getenv("TARGET_CHANNEL_ID"))
 
-# Daily capital and multiplier (manual in t.env)
+# Daily capital and multiplier
 DAILY_CAPITAL_USD = float(os.getenv("DAILY_CAPITAL_USD", 25))
 GAS_BUFFER = float(os.getenv("GAS_BUFFER", 0.009))  # 0.9% buffer for gas
 MAX_BUYS_PER_DAY = int(os.getenv("MAX_BUYS_PER_DAY", 5))  # max buy cycles per day
 
-# Manual tipping + congestion fees (loaded from t.env)
+# Manual tipping + congestion fees
 NORMAL_TIP_SOL = float(os.getenv("NORMAL_TIP_SOL", 0.015))
 CONGESTION_TIP_SOL = float(os.getenv("CONGESTION_TIP_SOL", 0.1))
 
-# Configurable Stop-loss & Take-profit (percentages, set in t.env)
-# Example in t.env:
-# STOP_LOSS=-20   # -20% means cut loss if token drops 20%
-# TAKE_PROFIT=100 # +100% means sell if token doubles
-STOP_LOSS = float(os.getenv("STOP_LOSS", "-20"))      # default -20%
-TAKE_PROFIT = float(os.getenv("TAKE_PROFIT", "100"))  # default +100%
+# Stop-loss & Take-profit
+STOP_LOSS = float(os.getenv("STOP_LOSS", "-20"))      # -20%
+TAKE_PROFIT = float(os.getenv("TAKE_PROFIT", "100"))  # +100%
 
 # Logging
 logging.basicConfig(
@@ -49,124 +46,126 @@ logger = logging.getLogger(__name__)
 session_name = "session"
 client = TelegramClient(session_name, API_ID, API_HASH)
 
-
+# -------------------------
+# Utility: calculate investment per cycle
+# -------------------------
 def calculate_compound_investment(base_capital: float, current_buy_index: int, max_buys: int) -> float:
-    """Calculate compounded investment for the current buy cycle."""
     return base_capital / max_buys
 
-
+# -------------------------
+# Handle new Telegram message
+# -------------------------
 async def handle_new_message(event):
     try:
-        message = event.message.message
-        ca = utils.extract_contract_address(message)
-        if not ca:
+        addresses = utils.extract_contracts_from_telegram(event.message)
+        if not addresses:
             return
 
-        if utils.is_ca_processed(ca):
-            logger.info(f"CA already processed: {ca}")
-            return
+        for ca in addresses:
+            if utils.is_ca_processed(ca):
+                logger.info(f"CA already processed: {ca}")
+                continue
 
-        logger.info(f"Detected new CA: {ca}")
+            logger.info(f"Detected new CA: {ca}")
 
-        for buy_index in range(1, MAX_BUYS_PER_DAY + 1):
-            usd_invest = calculate_compound_investment(DAILY_CAPITAL_USD, buy_index, MAX_BUYS_PER_DAY)
-            sol_invest = utils.usd_to_sol(usd_invest, RPC_URL)
+            for buy_index in range(1, MAX_BUYS_PER_DAY + 1):
+                usd_invest = calculate_compound_investment(DAILY_CAPITAL_USD, buy_index, MAX_BUYS_PER_DAY)
+                sol_invest = utils.usd_to_sol(usd_invest, RPC_URL)
 
-            # Deduct gas + tipping (manual from t.env)
-            sol_after_fees = sol_invest * (1 - GAS_BUFFER) - NORMAL_TIP_SOL
+                # Deduct gas + tip
+                sol_after_fees = sol_invest * (1 - GAS_BUFFER) - NORMAL_TIP_SOL
+                logger.info(f"Buy #{buy_index}: Investing {usd_invest}$ ({sol_after_fees:.6f} SOL after fees) into {ca}")
 
-            logger.info(f"Buy #{buy_index}: Investing {usd_invest}$ ({sol_after_fees:.6f} SOL after fees) into {ca}")
-
-            tx_buy = None
-            if DRY_RUN:
-                logger.info(f"[DRY RUN] Buying {usd_invest}$ worth of token {ca}")
-                tx_buy = f"SIMULATED_BUY_{buy_index}"
-            else:
-                tx_buy = utils.jupiter_buy(ca, sol_after_fees, tip=NORMAL_TIP_SOL)
-                if not tx_buy:
-                    logger.warning("Buy failed, retrying 3 times...")
-                    for attempt in range(3):
-                        time.sleep(2)
-                        tx_buy = utils.jupiter_buy(ca, sol_after_fees, tip=NORMAL_TIP_SOL)
-                        if tx_buy:
-                            break
+                tx_buy = None
+                if DRY_RUN:
+                    logger.info(f"[DRY RUN] Buying {usd_invest}$ worth of token {ca}")
+                    tx_buy = f"SIMULATED_BUY_{buy_index}"
+                else:
+                    tx_buy = utils.jupiter_buy(ca, sol_after_fees)
                     if not tx_buy:
-                        logger.error("Final buy failed, skipping this buy.")
+                        logger.warning("Buy failed, retrying 3 times...")
+                        for attempt in range(3):
+                            time.sleep(2)
+                            tx_buy = utils.jupiter_buy(ca, sol_after_fees)
+                            if tx_buy:
+                                break
+                        if not tx_buy:
+                            logger.error("Final buy failed, skipping this buy.")
+                            continue
+
+                # Save entry market cap
+                buy_market_cap = utils.get_market_cap(ca)
+                logger.info(f"Buy Market Cap: {buy_market_cap}")
+
+                # Monitor until stop-loss or take-profit
+                while True:
+                    current_cap = utils.get_market_cap(ca)
+                    if not current_cap:
+                        time.sleep(30)
                         continue
 
-            # Save entry market cap
-            buy_market_cap = utils.get_market_cap(ca)
-            logger.info(f"Buy Market Cap: {buy_market_cap}")
+                    profit_loss_pct = ((current_cap - buy_market_cap) / buy_market_cap) * 100
 
-            # Monitor loop
-            while True:
-                current_cap = utils.get_market_cap(ca)
-                if not current_cap:
+                    if profit_loss_pct >= TAKE_PROFIT:
+                        logger.info(f"✅ Take Profit triggered: {profit_loss_pct:.2f}%")
+                        break
+
+                    if profit_loss_pct <= STOP_LOSS:
+                        logger.info(f"🛑 Stop Loss triggered: {profit_loss_pct:.2f}%")
+                        break
+
                     time.sleep(30)
-                    continue
 
-                profit_loss_pct = ((current_cap - buy_market_cap) / buy_market_cap) * 100
-
-                # Take profit
-                if profit_loss_pct >= TAKE_PROFIT:
-                    logger.info(f"✅ Take Profit triggered: {profit_loss_pct:.2f}%")
-                    break
-
-                # Stop loss
-                if profit_loss_pct <= STOP_LOSS:
-                    logger.info(f"🛑 Stop Loss triggered: {profit_loss_pct:.2f}%")
-                    break
-
-                time.sleep(30)
-
-            # Execute sell
-            tx_sell = None
-            if DRY_RUN:
-                logger.info(f"[DRY RUN] Selling token {ca}")
-                tx_sell = f"SIMULATED_SELL_{buy_index}"
-            else:
-                tx_sell = utils.jupiter_sell(ca, tip=NORMAL_TIP_SOL)
-                if not tx_sell:
-                    logger.warning("Sell failed, retrying 3 times...")
-                    for attempt in range(3):
-                        time.sleep(2)
-                        tx_sell = utils.jupiter_sell(ca, tip=NORMAL_TIP_SOL)
-                        if tx_sell:
-                            break
+                # Execute sell
+                tx_sell = None
+                if DRY_RUN:
+                    logger.info(f"[DRY RUN] Selling token {ca}")
+                    tx_sell = f"SIMULATED_SELL_{buy_index}"
+                else:
+                    tx_sell = utils.jupiter_sell(ca)
                     if not tx_sell:
-                        logger.error("Final sell failed, skipping.")
-                        continue
+                        logger.warning("Sell failed, retrying 3 times...")
+                        for attempt in range(3):
+                            time.sleep(2)
+                            tx_sell = utils.jupiter_sell(ca)
+                            if tx_sell:
+                                break
+                        if not tx_sell:
+                            logger.error("Final sell failed, skipping.")
+                            continue
 
-            sell_market_cap = utils.get_market_cap(ca)
-            logger.info(f"Sell Market Cap: {sell_market_cap}")
+                sell_market_cap = utils.get_market_cap(ca)
+                logger.info(f"Sell Market Cap: {sell_market_cap}")
 
-            # Telegram report
-            utils.send_telegram_message(
-                BOT_TOKEN,
-                CHAT_ID,
-                f"📊 Trade Complete (Buy #{buy_index})\n"
-                f"CA: {ca}\n"
-                f"Buy Market Cap: {buy_market_cap}\n"
-                f"Sell Market Cap: {sell_market_cap}\n"
-                f"PnL: {profit_loss_pct:.2f}%\n"
-                f"Tx Buy: {tx_buy}\n"
-                f"Tx Sell: {tx_sell}"
-            )
+                # Telegram report
+                utils.send_telegram_message(
+                    BOT_TOKEN,
+                    CHAT_ID,
+                    f"📊 Trade Complete (Buy #{buy_index})\n"
+                    f"CA: {ca}\n"
+                    f"Buy Market Cap: {buy_market_cap}\n"
+                    f"Sell Market Cap: {sell_market_cap}\n"
+                    f"PnL: {profit_loss_pct:.2f}%\n"
+                    f"Tx Buy: {tx_buy}\n"
+                    f"Tx Sell: {tx_sell}"
+                )
 
-            # Save processed CA
-            utils.save_processed_ca(ca)
+                # Save processed CA
+                utils.save_processed_ca(ca)
 
-        # Sleep until next cycle (00:00 UTC)
-        now = datetime.utcnow()
-        tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        sleep_seconds = (tomorrow - now).total_seconds()
-        logger.info(f"Sleeping {sleep_seconds / 3600:.2f} hours until next cycle...")
-        time.sleep(sleep_seconds)
+            # Sleep until next cycle (00:00 UTC)
+            now = datetime.utcnow()
+            tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            sleep_seconds = (tomorrow - now).total_seconds()
+            logger.info(f"Sleeping {sleep_seconds / 3600:.2f} hours until next cycle...")
+            time.sleep(sleep_seconds)
 
     except Exception as e:
         logger.exception(f"Error in handle_new_message: {e}")
 
-
+# -------------------------
+# Main
+# -------------------------
 def main():
     logger.info("Starting sniper bot...")
 
