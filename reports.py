@@ -12,7 +12,11 @@ load_dotenv(dotenv_path="t.env")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Keep the log file in repo root; .gitignore can exclude it if you prefer
+# Configurable stop-loss and take-profit (from t.env)
+STOP_LOSS = float(os.getenv("STOP_LOSS", -20))     # default -20%
+TAKE_PROFIT = float(os.getenv("TAKE_PROFIT", 100)) # default +100%
+
+# Keep the log file in repo root
 REPORTS_FILE = "trade_logs.json"
 
 # -------------------------
@@ -31,7 +35,6 @@ def send_telegram_message(text: str) -> None:
             print("[!] Telegram API error:", resp.text)
     except Exception as e:
         print("[!] Failed to send message:", e)
-
 
 # -------------------------
 # JSON log helpers
@@ -59,7 +62,6 @@ def save_logs(logs: List[Dict[str, Any]]) -> None:
     except Exception as e:
         print("[!] Failed to save logs:", e)
 
-
 # -------------------------
 # Recording + Notifications
 # -------------------------
@@ -73,10 +75,10 @@ def send_buy_notification(token: str, coin_name: str, amount_usd: float, buy_mca
         f"• CA: {md_code(token)}\n"
         f"• Amount: ${amount_usd:.2f}\n"
         f"• Market Cap @ Buy: {mc_text}\n"
-        f"• Tip Paid: {tip_text}"
+        f"• Tip Paid: {tip_text}\n"
+        f"• SL: {STOP_LOSS:.1f}% | TP: {TAKE_PROFIT:.1f}%"
     )
     send_telegram_message(msg)
-
 
 def send_sell_notification(token: str, coin_name: str, sell_mcap: Optional[float], profit_usd: Optional[float], priority_fee_sol: Optional[float]) -> None:
     name_display = coin_name or "N/A"
@@ -89,10 +91,10 @@ def send_sell_notification(token: str, coin_name: str, sell_mcap: Optional[float
         f"• CA: {md_code(token)}\n"
         f"• Market Cap @ Sell: {mc_text}\n"
         f"• Profit: {profit_text}\n"
-        f"• Tip Paid: {tip_text}"
+        f"• Tip Paid: {tip_text}\n"
+        f"• SL: {STOP_LOSS:.1f}% | TP: {TAKE_PROFIT:.1f}%"
     )
     send_telegram_message(msg)
-
 
 def record_buy(token: str,
                coin_name: Optional[str],
@@ -122,7 +124,6 @@ def record_buy(token: str,
     save_logs(logs)
     send_buy_notification(token, entry["coin_name"], amount_usd, buy_market_cap, priority_fee_sol)
 
-
 def record_sell(token: str,
                 sell_market_cap: Optional[float],
                 sell_time: str,
@@ -144,7 +145,6 @@ def record_sell(token: str,
         if resolved:
             coin_name_for_msg = resolved
     send_sell_notification(token, coin_name_for_msg, sell_market_cap, profit_usd, priority_fee_sol)
-
 
 # -------------------------
 # Reporting
@@ -179,10 +179,10 @@ def generate_report(logs: List[Dict[str, Any]]) -> str:
             f"Tips: {(buy_fee + sell_fee):.3f} SOL"
         )
 
-    lines.append(f"\n*Total profit:* ${round(total_profit, 2):.2f}")
+    lines.append(f"\n*Configured SL/TP:* {STOP_LOSS:.1f}% / {TAKE_PROFIT:.1f}%")
+    lines.append(f"*Total profit:* ${round(total_profit, 2):.2f}")
     lines.append(f"*Total tips paid:* {total_tips:.3f} SOL (Normal: {normal_tips:.3f} | Congestion: {congestion_tips:.3f})")
     return "\n".join(lines)
-
 
 def send_daily_report() -> None:
     today = str(datetime.datetime.utcnow().date())
@@ -192,7 +192,6 @@ def send_daily_report() -> None:
         send_telegram_message("🗓️ No trades today.")
         return
     send_telegram_message("📅 *Daily Report*\n\n" + generate_report(today_logs))
-
 
 def send_monthly_report() -> None:
     now = datetime.datetime.utcnow()
@@ -209,7 +208,6 @@ def send_monthly_report() -> None:
         send_telegram_message("🗓️ No trades this month.")
         return
     send_telegram_message("📅 *Monthly Report*\n\n" + generate_report(month_logs))
-
 
 # -------------------------
 # CLI
