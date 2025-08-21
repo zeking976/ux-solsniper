@@ -284,7 +284,17 @@ def get_token_balance_lamports(token_mint: str) -> int:
         resp = requests.post(RPC_URL, json=body, timeout=8)
         resp.raise_for_status()
         accounts = resp.json().get("result", {}).get("value", [])
-        total = sum(int(acc.get("account", {}).get("data", {}).get("parsed", {}).get("info", {}).get("tokenAmount", {}).get("amount", "0")) for acc in accounts)
+        total = sum(
+            int(
+                acc.get("account", {})
+                .get("data", {})
+                .get("parsed", {})
+                .get("info", {})
+                .get("tokenAmount", {})
+                .get("amount", "0")
+            )
+            for acc in accounts
+        )
         return total
     except Exception as e:
         logger.exception("get_token_balance_lamports error: %s", e)
