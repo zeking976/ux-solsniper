@@ -6,17 +6,29 @@ from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
 from utils import resolve_token_name, md_code
 
+# -------------------------
 # Load environment
-load_dotenv(dotenv_path="t.env")
+# -------------------------
+load_dotenv(dotenv_path=os.path.expanduser("~/t.env"))
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Configurable stop-loss and take-profit (from t.env)
-STOP_LOSS = float(os.getenv("STOP_LOSS", -20))     # default -20%
-TAKE_PROFIT = float(os.getenv("TAKE_PROFIT", 100)) # default +100%
+# Configurable thresholds from t.env
+STOP_LOSS = float(os.getenv("STOP_LOSS", -20))       # default -20%
+TAKE_PROFIT = float(os.getenv("TAKE_PROFIT", 100))   # default +100%
+CYCLE_LIMIT = os.getenv("CYCLE_LIMIT", "1")          # string ("3" or "5,3")
+MAX_BUYS, MAX_SELLS = (None, None)
+if "," in CYCLE_LIMIT:
+    parts = [int(x.strip()) for x in CYCLE_LIMIT.split(",") if x.strip().isdigit()]
+    if len(parts) == 2:
+        MAX_BUYS, MAX_SELLS = parts
+else:
+    MAX_BUYS = int(CYCLE_LIMIT)
 
-# Keep the log file in repo root
+# -------------------------
+# Files
+# -------------------------
 REPORTS_FILE = "trade_logs.json"
 
 # -------------------------
@@ -179,7 +191,12 @@ def generate_report(logs: List[Dict[str, Any]]) -> str:
             f"Tips: {(buy_fee + sell_fee):.3f} SOL"
         )
 
+    # Summary
     lines.append(f"\n*Configured SL/TP:* {STOP_LOSS:.1f}% / {TAKE_PROFIT:.1f}%")
+    if MAX_BUYS and MAX_SELLS:
+        lines.append(f"*Cycle Limit:* {MAX_BUYS} buys / {MAX_SELLS} sells per cycle")
+    elif MAX_BUYS:
+        lines.append(f"*Cycle Limit:* {MAX_BUYS} trades per cycle")
     lines.append(f"*Total profit:* ${round(total_profit, 2):.2f}")
     lines.append(f"*Total tips paid:* {total_tips:.3f} SOL (Normal: {normal_tips:.3f} | Congestion: {congestion_tips:.3f})")
     return "\n".join(lines)
