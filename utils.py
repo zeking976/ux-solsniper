@@ -11,10 +11,12 @@ from datetime import datetime, timedelta
 import requests
 from dotenv import load_dotenv
 
-# Solana libs for signing and broadcast
+# -------------------------
+# Solana libs for signing and broadcast (solders-compatible)
+# -------------------------
 from solana.rpc.api import Client
 from solders.keypair import Keypair
-from solana.transaction import Transaction
+from solders.transaction import Transaction  # updated from solana.transaction
 from solana.rpc.types import TxOpts
 
 # -------------------------
