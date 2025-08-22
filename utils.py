@@ -41,6 +41,7 @@ load_env(os.path.expanduser("~/t.env"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logger = logging.getLogger("ux_solsniper")
 logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
+logger.propagate = False
 if not logger.handlers:
     fh = logging.StreamHandler()
     fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
@@ -61,8 +62,9 @@ def _load_keypair_from_env() -> Keypair:
     try:
         if sk.strip().startswith("["):
             arr = json.loads(sk)
-            sk_bytes = bytes(arr)
-            return Keypair.from_secret_key(sk_bytes)
+            if isinstance(arr, list):
+                sk_bytes = bytes(arr)
+                return Keypair.from_secret_key(sk_bytes)
     except Exception:
         pass
     try:
@@ -285,8 +287,10 @@ def get_priority_fee_manual() -> float:
     except Exception:
         return HIGH_PRIORITY_FEE
 
-def get_priority_fee(congestion: bool = False) -> float:
-    return get_priority_fee_manual(congestion)
+def get_priority_fee(congestion: Optional[bool] = None) -> float:
+    if congestion is not None:
+        return HIGH_PRIORITY_FEE if congestion else NORMAL_PRIORITY_FEE
+    return get_priority_fee_manual()
 
 # -------------------------
 # Gas fee calculation & reserve
@@ -375,7 +379,6 @@ def fetch_jupiter_quote(
     except Exception as e:
         logger.exception("fetch_jupiter_quote error: %s", e)
         return None
-
 
 def execute_jupiter_swap_from_quote(quote: dict, congestion: bool = False) -> Optional[str]:
     """
