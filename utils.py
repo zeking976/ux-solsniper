@@ -340,9 +340,18 @@ def get_token_balance_lamports(token_mint: str) -> int:
         return 0
 
 # -------------------------
-# Jupiter quote & swap (Anti-MEV)
+# Jupiter quote & swap (Anti-MEV, solders-compatible)
 # -------------------------
-def fetch_jupiter_quote(input_mint: str, output_mint: str, amount: int, slippage_bps: int = 50, only_direct: bool = False) -> Optional[Dict[str, Any]]:
+def fetch_jupiter_quote(
+    input_mint: str,
+    output_mint: str,
+    amount: int,
+    slippage_bps: int = 50,
+    only_direct: bool = False
+) -> Optional[Dict[str, Any]]:
+    """
+    Fetch a quote from Jupiter API for a token swap.
+    """
     try:
         params = {
             "inputMint": input_mint,
@@ -365,12 +374,18 @@ def fetch_jupiter_quote(input_mint: str, output_mint: str, amount: int, slippage
         logger.exception("fetch_jupiter_quote error: %s", e)
         return None
 
+
 def execute_jupiter_swap_from_quote(quote: dict, congestion: bool = False) -> Optional[str]:
+    """
+    Execute a Jupiter swap using solders.Transaction.
+    Handles DRY_RUN, priority fee, and MEV protection.
+    """
     if DRY_RUN:
         logger.info("[DRY RUN] execute_jupiter_swap_from_quote - simulated")
         return "SIMULATED_TX_SIGNATURE"
 
     try:
+        # Prepare payload
         payload = {
             "quoteResponse": quote,
             "userPublicKey": PUBLIC_KEY,
@@ -381,10 +396,12 @@ def execute_jupiter_swap_from_quote(quote: dict, congestion: bool = False) -> Op
         priority_fee_sol = get_priority_fee(congestion)
         payload["prioritizationFeeLamports"] = int(priority_fee_sol * 1_000_000_000)
 
+        # Send swap request
         r = requests.post(JUPITER_SWAP_API, json=payload, timeout=20)
         r.raise_for_status()
         swap_json = r.json()
 
+        # Extract base64 transaction
         swap_tx_b64 = swap_json.get("swapTransaction") or swap_json.get("data", {}).get("swapTransaction")
         if not swap_tx_b64:
             for v in swap_json.values():
@@ -396,17 +413,23 @@ def execute_jupiter_swap_from_quote(quote: dict, congestion: bool = False) -> Op
             logger.error("Swap API did not return a swapTransaction: %s", swap_json)
             return None
 
+        # Decode and deserialize using solders
         raw = base64.b64decode(swap_tx_b64)
         tx = Transaction.deserialize(raw)
-        tx.sign(KEYPAIR)
-        serialized = bytes(tx.serialize())
 
+        # Sign with solders Keypair
+        tx.sign([KEYPAIR])
+        serialized = bytes(tx)
+
+        # Send raw transaction via RPC
         resp = RPC.send_raw_transaction(serialized, opts=TxOpts(skip_preflight=False, preflight_commitment="processed"))
+
         sig = None
         if isinstance(resp, dict):
             sig = resp.get("result") or resp.get("signature")
         elif isinstance(resp, str):
             sig = resp
+
         logger.info("Broadcasted tx signature: %s", sig)
         return sig
 
