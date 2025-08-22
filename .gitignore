@@ -26,21 +26,23 @@ env/
 .venv/
 
 # -------------------------
-# IDE configs
+# IDE / Editor configs
 # -------------------------
 .vscode/
 .idea/
+*.iml
 
 # -------------------------
-# Systemd or other service files
+# Systemd / service files
 # -------------------------
 *.service
 
 # -------------------------
-# Jupiter cache & logs
+# Jupyter cache & logs
 # -------------------------
 .jup_cache/
 .jup_logs/
+.ipynb_checkpoints/
 
 # -------------------------
 # Data files
@@ -48,6 +50,9 @@ env/
 *.csv
 *.pdf
 *.xlsx
+*.ods
+*.odt
+*.odp
 
 # -------------------------
 # Build / distribution
@@ -55,6 +60,7 @@ env/
 *.spec
 dist/
 build/
+*.egg-info/
 
 # -------------------------
 # Telethon sessions
@@ -67,14 +73,17 @@ build/
 # -------------------------
 *~
 *.bak
+*.tmp
+*.swp
 *.so
 
 # -------------------------
-# Bot logs (tracked)
+# Logs (only bot.log is tracked)
 # -------------------------
-# bot.log ← KEPT TRACKED
+*.log
+!bot.log
 
 # -------------------------
-# JSON reports (tracked)
+# JSON reports (keep tracked)
 # -------------------------
-# *.json ← KEPT TRACKED
+# *.json  ← intentionally not ignored
