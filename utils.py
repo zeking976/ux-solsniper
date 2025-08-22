@@ -75,7 +75,7 @@ def _load_keypair_from_env() -> Keypair:
             raise
 
 KEYPAIR = _load_keypair_from_env()
-PUBLIC_KEY = os.getenv("PUBLIC_KEY")
+PUBLIC_KEY = os.getenv("PUBLIC_KEY") or str(KEYPAIR.public_key)
 
 # -------------------------
 # Jupiter / Dex endpoints
@@ -90,8 +90,13 @@ DEXSCREENER_API_KEY = os.getenv("DEXSCREENER_API_KEY", "")
 # Bot trading config
 # -------------------------
 INVESTMENT_USD = float(os.getenv("INVESTMENT_USD", os.getenv("DAILY_CAPITAL_USD", "25")))
-DAILY_LIMITS = os.getenv("DAILY_LIMITS", os.getenv("MAX_BUYS_PER_DAY", "5"))
-CYCLE_LIMIT = int(os.getenv("CYCLE_LIMIT", "1"))
+DAILY_LIMITS = int(os.getenv("DAILY_LIMITS", os.getenv("MAX_BUYS_PER_DAY", "5")))
+# Parse CYCLE_LIMIT from env; support single int or tuple like "5,4"
+raw_cycle = os.getenv("CYCLE_LIMIT", "1")
+if "," in raw_cycle:
+    CYCLE_LIMIT = tuple(int(x.strip()) for x in raw_cycle.split(","))
+else:
+    CYCLE_LIMIT = int(raw_cycle)
 
 TAKE_PROFIT = float(os.getenv("TAKE_PROFIT", os.getenv("TAKE_PROFIT_MULTIPLIER", "100")))
 STOP_LOSS = float(os.getenv("STOP_LOSS", os.getenv("STOP_LOSS_PERCENT", "-20")))
