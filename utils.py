@@ -74,6 +74,7 @@ def _load_keypair_from_env() -> Keypair:
                 sk_bytes = bytes(arr)
                 return Keypair.from_secret_key(sk_bytes)
     except Exception:
+        # fallthrough to other decodings
         pass
     # base58
     try:
@@ -120,7 +121,11 @@ if "," in _raw_cycle:
         logger.warning("Invalid CYCLE_LIMIT format '%s'. Falling back to single value.", _raw_cycle)
         CYCLE_LIMIT = (int(DAILY_LIMITS),)
 else:
-    CYCLE_LIMIT = int(_raw_cycle)
+    # allow int or str that represents int
+    try:
+        CYCLE_LIMIT = int(_raw_cycle)
+    except Exception:
+        CYCLE_LIMIT = int(DAILY_LIMITS)
 
 # Risk params
 TAKE_PROFIT = float(os.getenv("TAKE_PROFIT", os.getenv("TAKE_PROFIT_MULTIPLIER", "100")))   # %
@@ -515,153 +520,4 @@ def _safe_sign_transaction(tx: Transaction, keypair: Keypair) -> None:
     Try list first, then single. If both fail, raise the final exception.
     """
     try:
-        tx.sign([keypair])  # works on many recent solders versions
-        return
-    except Exception as e1:
-        logger.debug(".sign([KEYPAIR]) failed; trying .sign(KEYPAIR). err=%s", e1)
-        try:
-            tx.sign(keypair)  # type: ignore[arg-type]
-            return
-        except Exception as e2:
-            logger.error("Failed to sign transaction via both styles. e1=%s e2=%s", e1, e2)
-            # raise the most informative exception
-            raise
-
-def execute_jupiter_swap_from_quote(quote: dict, congestion: bool = False) -> Optional[str]:
-    """
-    Execute a Jupiter swap using solders.Transaction.
-    Handles DRY_RUN, priority fee, and MEV protection.
-    Returns the transaction signature (str) or None on failure.
-    """
-    if DRY_RUN:
-        logger.info("[DRY RUN] execute_jupiter_swap_from_quote - simulated")
-        return "SIMULATED_TX_SIGNATURE"
-
-    try:
-        payload = {
-            "quoteResponse": quote,
-            "userPublicKey": PUBLIC_KEY,
-            "wrapAndUnwrapSol": True,
-            "asymmetricSlippage": bool(MEV_PROTECTION),
-        }
-
-        priority_fee_sol = get_priority_fee(congestion)
-        payload["prioritizationFeeLamports"] = int(priority_fee_sol * 1_000_000_000)
-
-        r = requests.post(JUPITER_SWAP_API, json=payload, timeout=20)
-        r.raise_for_status()
-        swap_json = r.json()
-
-        # Extract base64 transaction
-        swap_tx_b64 = (
-            swap_json.get("swapTransaction")
-            or swap_json.get("data", {}).get("swapTransaction")
-        )
-        if not swap_tx_b64:
-            # Fallback: try to detect a long base64 string in the response
-            for v in swap_json.values():
-                if isinstance(v, str) and len(v) > 100:
-                    swap_tx_b64 = v
-                    break
-
-        if not swap_tx_b64:
-            logger.error("Swap API did not return a swapTransaction: %s", swap_json)
-            return None
-
-        raw = base64.b64decode(swap_tx_b64)
-        tx = _safe_deserialize_transaction(raw)
-
-        _safe_sign_transaction(tx, KEYPAIR)
-        serialized = bytes(tx)
-
-        resp = RPC.send_raw_transaction(
-            serialized,
-            opts=TxOpts(skip_preflight=False, preflight_commitment="processed"),
-        )
-
-        sig = None
-        if isinstance(resp, dict):
-            sig = resp.get("result") or resp.get("signature")
-        elif isinstance(resp, str):
-            sig = resp
-
-        if not sig:
-            logger.error("No signature returned from RPC: %s", resp)
-            return None
-
-        logger.info("Broadcasted tx signature: %s", sig)
-        return sig
-
-    except Exception as e:
-        logger.exception("execute_jupiter_swap_from_quote error: %s", e)
-        return None
-
-def sign_transaction(tx, keypair):
-    try:
-        tx.sign([keypair])
-    except TypeError:
-        tx.sign(keypair)
-    return tx
-
-# ============================================================
-# Small utilities used by reporting / other modules
-# ============================================================
-def md_code(s: str) -> str:
-    """
-    Wrap code/addresses in monospace Markdown to send to Telegram.
-    """
-    if not s:
-        return "`N/A`"
-    # escape backticks if any
-    return f"`{s}`"
-
-def resolve_token_name(contract_address: str) -> Optional[str]:
-    """
-    Best-effort token name resolver. For now this is a light wrapper that tries:
-      - Dexscreener -> pair name
-      - Simple heuristics
-    Returns token name (string) or None if unknown.
-    This is intentionally lightweight — extend as needed.
-    """
-    if not contract_address:
-        return None
-    try:
-        base = f"https://api.dexscreener.io/latest/dex/pairs/solana/{contract_address}"
-        r = requests.get(base, timeout=6)
-        if r.ok:
-            data = r.json()
-            if isinstance(data, dict):
-                # "pair" or "pairs" may contain names
-                if "pair" in data and data["pair"].get("baseToken", {}).get("name"):
-                    return data["pair"]["baseToken"]["name"]
-                if "pairs" in data and data["pairs"]:
-                    p0 = data["pairs"][0]
-                    name = p0.get("pairName") or p0.get("label") or p0.get("baseToken", {}).get("name")
-                    if name:
-                        return name
-    except Exception:
-        pass
-    # fallback: return shortened address
-    return contract_address[:6] + "..." + contract_address[-4:]
-
-# ============================================================
-# End of file - helpful checklist (keeps file long & explicit)
-# ============================================================
-# Checklist / notes:
-# - Ensure PRIVATE_KEY is set correctly in t.env (base58/json/hex). If not present, utils import will raise.
-# - If solders version complains about Transaction.deserialize/from_bytes, the safe helpers above attempt both.
-# - To change gas / priority fee behavior: edit GAS_BUFFER / NORMAL_PRIORITY_FEE / HIGH_PRIORITY_FEE in t.env.
-# - CYCLE_LIMIT may be a single integer (e.g. 5) or a comma-separated list (e.g. "5,4") to rotate limits across days.
-# - Use calculate_total_gas_fee(...) to estimate full USD costs (priority fee + reserve) if you want to pre-size buys conservatively.
-# - This utils module intentionally centralizes env reading to avoid duplicated reads in multiple files.
-#
-# Example usage highlights (for your reference):
-#   from utils import calculate_total_gas_fee, usd_to_sol, get_priority_fee
-#   est = calculate_total_gas_fee(25.0, congestion=None, num_priority_txs=1)
-#   sol_amount = usd_to_sol(25.0 - (est or 0.0))
-#
-# Troubleshooting:
-# - If you see RPC latency errors during congestion detection, consider increasing the timeout_ms param passed to detect_network_congestion.
-# - If your RPC rejects send_raw_transaction, ensure the RPC_URL you provided supports send_raw_transaction and that your keypair is valid.
-#
-# End of utils.py
+        tx.sign(
