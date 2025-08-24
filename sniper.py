@@ -529,5 +529,4 @@ async def handle_new_message(event) -> None:
             now = datetime.utcnow()
             # sleep until next 00:00 UTC
             next_cycle = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-            sleep_seconds = (next_cycle - now).total_seconds()
-           
+            sleep_seconds = (next_cycle - now).total_seconds()        
