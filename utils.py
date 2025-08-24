@@ -615,6 +615,32 @@ def sign_transaction(tx, keypair):
     return tx
 
 # ============================================================
+# Reinvestment Plan Utilities
+# ============================================================
+
+def get_daily_reinvestment_plan(day: int) -> int:
+    """
+    Returns the number of reinvestments allowed for a given cycle day.
+    
+    Example:
+        Day 1 → 5 reinvestments
+        Day 2 → 4 reinvestments
+        Any other day → restart cycle (5 reinvestments again)
+
+    Args:
+        day (int): Current day in the reinvestment cycle.
+
+    Returns:
+        int: Number of reinvestments for that day.
+    """
+    plan = {
+        1: 5,  # Day 1
+        2: 4   # Day 2
+    }
+    # Default: restart cycle at Day 1 (5 reinvestments)
+    return plan.get(day, plan[1])
+
+# ============================================================
 # Small utilities used by reporting / other modules
 # ============================================================
 def md_code(s: str) -> str:
