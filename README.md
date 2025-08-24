@@ -1,71 +1,52 @@
 # 🚀 UX SolSniper - Solana Meme Coin Sniper Bot
 
-Welcome to **UX SolSniper**, the ultimate Solana meme coin sniper bot designed for automated trading, profit tracking, and real-time notifications. 💎✨
+UX SolSniper is a high-speed **automated Solana meme coin sniper bot** with **real-time Telegram alerts**, **dynamic capital management**, and **profit tracking**. 💎✨  
 
 ---
 
-## 🔥 Key Features
+## 🔥 Key Features  
 
-### 1️⃣ Telegram Integration
-- 📝 **Monitors Telegram channels** for new token contract addresses.  
-- 📲 Sends **real-time buy/sell notifications** to your Telegram account.  
-- 🗂 Keeps a **record of all trades** in JSON logs for daily/monthly reports.
+### 📲 Telegram Integration  
+- Monitors Telegram channels for new contract addresses.  
+- Sends **buy/sell alerts** with market cap, profit, and fees.  
+- Generates **daily & monthly reports** with trade summaries.  
 
-### 2️⃣ Automated Trading
-- 💰 Executes **real buys and sells** using **JupiterSwap**.  
-- ⚡ Uses **fast Solana RPC calls** for speed and efficiency.  
-- 🛡 Includes **Anti-MEV protection** to prevent front-running.  
-- 💵 **Dynamic investment**: invests a portion of daily capital across multiple buy cycles.  
-- 🧮 Calculates **target sell price** using configurable **investment multipliers** (e.g., 2× by default).  
+### ⚡ Automated Trading  
+- Executes **real buys & sells** using **JupiterSwap**.  
+- Ultra-fast **RPC calls** with anti-MEV protection.  
+- Dynamic capital allocation across multiple trades.  
+- Configurable **Stop-Loss (SL)** and **Take-Profit (TP)** via `t.env`.  
 
-### 3️⃣ Capital Management
-- 📊 Configurable **daily capital** and **max buys per day**.  
-- 🔄 Supports **compounded investment strategy** across multiple buys.  
-- 🪙 Converts **USD to SOL** in real-time with **market price detection**.  
-- ⛽ Automatically accounts for **Solana network fees** and **priority fees** (normal & congestion).  
+### 📊 Capital & Cycle Management  
+- **Daily capital reset at UTC 00:00**.  
+- Supports **multi-cycle trading** (configurable in `t.env`).  
+- Auto converts USD → SOL using live price feeds.  
+- Tracks **priority fees** (normal vs congestion).  
 
-### 4️⃣ Priority Fees & MEV Protection
-- ⏱ Detects **network congestion** and dynamically adjusts **priority fee**:  
-  - 0.03 SOL normal  
-  - 0.2–0.3 SOL during congestion  
-- 🛡 Minimizes risk from **front-running bots** and MEV exploits.
+### ⛽ Priority Fees & Network Safety  
+- Normal fee: `0.03 SOL`.  
+- Congestion fee: `0.2–0.3 SOL`.  
+- Protects against **front-running & MEV bots**.  
 
-### 5️⃣ Logging & Reports
-- 🗂 Tracks **processed contract addresses** to avoid double buys.  
-- 📈 Maintains **JSON logs** for all buys, sells, profits, and fees.  
-- 🟢 Sends **daily & monthly Telegram reports** with:  
-  - Total profits  
-  - Tips paid (normal vs congestion)  
-  - Buy/sell timestamps  
-  - Market caps at buy and sell  
+### 🗂 Logging & Reporting  
+- Logs all trades in `trade_logs.json`.  
+- Tracks **market cap, profits, and tips** per trade.  
+- Telegram reports include:  
+  - ✅ Profits per token  
+  - ⛽ Normal vs congestion tips  
+  - 📅 Daily & monthly summaries  
 
-### 6️⃣ Safe & Configurable
-- 🔒 Uses **.env (t.env)** for sensitive data like keys and tokens.  
-- ⚙️ All key parameters (daily capital, multiplier, max buys, fees) are **editable at any time**.  
-- 🧪 Supports **DRY_RUN mode** for testing without spending real SOL.  
+### 🔒 Safe & Configurable  
+- Uses **t.env** for sensitive keys & parameters.  
+- All settings (capital, SL/TP, cycle limits, fees) are configurable.  
+- Supports **DRY_RUN** mode for safe testing.  
 
-### 7️⃣ Compatibility
-- 🖥 Works on VPS, Termux, or local machine.  
-- 🤖 Compatible with **Python 3.11+** and popular packages: `telethon`, `solana`, `solders`, `python-dotenv`.  
-- 📦 Includes **all necessary tools** for signing transactions and communicating with JupiterSwap.  
+### 🖥 Compatibility  
+- Works on **VULTR VPS**, **Termux**, or local machine.  
+- Requires **Python 3.11+**.  
+- Lightweight: runs on **cloud or shared CPUs**.  
 
 ---
 
-## 💡 Extra Highlights
-- 🎯 **Solana-only focus** for ultra-fast meme coin sniping.  
-- 🔁 Automatic **retry on failed transactions** for both buy and sell.  
-- 🕒 **UTC 00:00 cycle scheduling** ensures daily capital reset.  
-- 📊 Detailed **profit & fee tracking** for better performance insights.  
-
----
-
-**💎 UX SolSniper** is built for serious Solana meme coin traders who want speed, automation, and transparency.  
-
----
-
-### ⚡ Emojis Key
-- ✅ = Successful trade  
-- 🟣 = Sell executed  
-- 🔹 = Trade entry  
-- 📅 = Daily/monthly reports  
-- ⛽ = Gas / priority fees
+💡 **UX SolSniper = speed + automation + transparency.**  
+Built for traders who want **fast, safe, and profitable Solana meme coin sniping.** 🚀
