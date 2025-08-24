@@ -596,6 +596,13 @@ def execute_jupiter_swap_from_quote(quote: dict, congestion: bool = False) -> Op
         logger.exception("execute_jupiter_swap_from_quote error: %s", e)
         return None
 
+def sign_transaction(tx, keypair):
+    try:
+        tx.sign([keypair])
+    except TypeError:
+        tx.sign(keypair)
+    return tx
+
 # ============================================================
 # Small utilities used by reporting / other modules
 # ============================================================
