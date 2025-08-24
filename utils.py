@@ -6,7 +6,7 @@ import base64
 import base58
 import fcntl
 import logging
-from typing import Optional, Dict, Any, Tuple, Sequence, List
+from typing import Optional, Dict, Any, Tuple, Sequence, List, Union
 from datetime import datetime, timedelta
 import requests
 from dotenv import load_dotenv
@@ -62,6 +62,7 @@ def _load_keypair_from_env() -> Keypair:
       - JSON array of 64 bytes:   "[12,34,...]"
       - base58 string (phantom):  "5y7...."
       - hex string:               "ab12cd34..."
+    Returns a solders Keypair.
     """
     sk = os.getenv("PRIVATE_KEY")
     if not sk:
@@ -116,7 +117,7 @@ DAILY_LIMITS = int(os.getenv("DAILY_LIMITS", os.getenv("MAX_BUYS_PER_DAY", "5"))
 _raw_cycle = os.getenv("CYCLE_LIMIT", str(DAILY_LIMITS))
 if "," in _raw_cycle:
     try:
-        CYCLE_LIMIT: Tuple[int, ...] = tuple(int(x.strip()) for x in _raw_cycle.split(",") if x.strip())
+        CYCLE_LIMIT: Union[Tuple[int, ...], int] = tuple(int(x.strip()) for x in _raw_cycle.split(",") if x.strip())
     except Exception:
         logger.warning("Invalid CYCLE_LIMIT format '%s'. Falling back to single value.", _raw_cycle)
         CYCLE_LIMIT = (int(DAILY_LIMITS),)
@@ -146,6 +147,10 @@ PROCESSED_FILE = os.getenv("PROCESSED_FILE", "processed_ca.txt")
 
 # Gas buffer % of USD balance to reserve after each trade (e.g. 0.009 = 0.9%)
 GAS_BUFFER = float(os.getenv("GAS_BUFFER", "0.009"))
+
+# Optional REINVESTMENT_PLAN env (string like "1:5,2:4") — we provide parser but do not require it.
+# If not present, get_daily_reinvestment_plan() uses the built-in defaults.
+REINVESTMENT_PLAN_RAW = os.getenv("REINVESTMENT_PLAN", "")
 
 # ============================================================
 # Telegram helper
@@ -477,14 +482,17 @@ def fetch_jupiter_quote(
             "amount":             str(amount),
             "slippageBps":        slippage_bps,
             "onlyDirectRoutes":   only_direct,
-            "asymmetricSlippage": bool(MEV_PROTECTION)
         }
+        # add asymmetricSlippage only when MEV_PROTECTION is truthy
+        if MEV_PROTECTION:
+            params["asymmetricSlippage"] = True
+
         r = requests.get(JUPITER_QUOTE_API, params=params, timeout=10)
         r.raise_for_status()
         data = r.json()
 
         # v6 often returns {"data":[{...route...}, ...]}
-        if isinstance(data, dict) and "data" in data and data["data"]:
+        if isinstance(data, dict) and "data" in data and isinstance(data["data"], list) and data["data"]:
             return data["data"][0]
 
         # Some servers respond with {"route": {...}}
@@ -529,7 +537,7 @@ def _safe_sign_transaction(tx: Transaction, keypair: Keypair) -> None:
             return
         except Exception as e2:
             logger.error("Failed to sign transaction via both styles. e1=%s e2=%s", e1, e2)
-            # raise the most informative exception
+            # re-raise the last exception to the caller
             raise
 
 def execute_jupiter_swap_from_quote(quote: dict, congestion: bool = False) -> Optional[str]:
@@ -606,6 +614,7 @@ def execute_jupiter_swap_from_quote(quote: dict, congestion: bool = False) -> Op
 def sign_transaction(tx, keypair):
     """
     Backwards-compatible wrapper to sign a solders transaction object.
+    Kept for external modules that expect a simple helper.
     """
     try:
         tx.sign([keypair])
@@ -618,26 +627,53 @@ def sign_transaction(tx, keypair):
 # Reinvestment Plan Utilities
 # ============================================================
 
+def _parse_reinvestment_plan_env(raw: str) -> Dict[int, int]:
+    """
+    Parse REINVESTMENT_PLAN env format (e.g. "1:5,2:4,3:3") into {day:reinvestments}.
+    Returns an empty dict on parse failure or empty input.
+    """
+    if not raw:
+        return {}
+    plan: Dict[int, int] = {}
+    try:
+        parts = [p.strip() for p in raw.split(",") if p.strip()]
+        for part in parts:
+            if ":" in part:
+                left, right = part.split(":", 1)
+                day = int(left.strip())
+                val = int(right.strip())
+                plan[day] = val
+    except Exception as e:
+        logger.warning("Failed to parse REINVESTMENT_PLAN env: %s (%s)", raw, e)
+        return {}
+    return plan
+
+# cached parsed env plan (if provided)
+_REINVESTMENT_PLAN_PARSED = _parse_reinvestment_plan_env(REINVESTMENT_PLAN_RAW)
+
 def get_daily_reinvestment_plan(day: int) -> int:
     """
     Returns the number of reinvestments allowed for a given cycle day.
-    
+
+    Behavior:
+      - If REINVESTMENT_PLAN env is set (e.g. "1:5,2:4"), it is used.
+      - Otherwise defaults to builtin plan {1:5, 2:4}.
+      - If day requested not found, default to the day 1 plan.
+
     Example:
         Day 1 → 5 reinvestments
         Day 2 → 4 reinvestments
-        Any other day → restart cycle (5 reinvestments again)
-
-    Args:
-        day (int): Current day in the reinvestment cycle.
-
-    Returns:
-        int: Number of reinvestments for that day.
     """
-    plan = {
-        1: 5,  # Day 1
-        2: 4   # Day 2
-    }
-    # Default: restart cycle at Day 1 (5 reinvestments)
+    # builtin fallback
+    builtin_plan = {1: 5, 2: 4}
+
+    # If user provided a custom env plan, merge with builtin where missing
+    if _REINVESTMENT_PLAN_PARSED:
+        plan = dict(builtin_plan)
+        plan.update(_REINVESTMENT_PLAN_PARSED)
+    else:
+        plan = builtin_plan
+
     return plan.get(day, plan[1])
 
 # ============================================================
@@ -682,69 +718,106 @@ def resolve_token_name(contract_address: str) -> Optional[str]:
     return contract_address[:6] + "..." + contract_address[-4:]
 
 # ============================================================
-# Long checklist and examples (keeps file explicit & long)
+# Cycle reset helper (user asked to add)
 # ============================================================
-#
-# Checklist / notes:
-#
-# - Ensure PRIVATE_KEY is set correctly in t.env (base58/json/hex). If not present, utils import will raise.
-# - If solders version complains about Transaction.deserialize/from_bytes, the safe helpers above attempt both.
-# - To change gas / priority fee behavior: edit GAS_BUFFER / NORMAL_PRIORITY_FEE / HIGH_PRIORITY_FEE in t.env.
-# - CYCLE_LIMIT may be a single integer (e.g. 5) or a comma-separated list (e.g. "5,4") to rotate limits across days.
-# - Use calculate_total_gas_fee(...) to estimate full USD costs (priority fee + reserve) if you want to pre-size buys conservatively.
-# - This utils module intentionally centralizes env reading to avoid duplicated reads in multiple files.
-#
-# Example usage highlights (for your reference):
-#
-#   from utils import calculate_total_gas_fee, usd_to_sol, get_priority_fee
-#
-#   # minimal approach (what the bot already does in many places):
-#   priority_fee_sol = get_priority_fee()
-#   sol_amount = usd_to_sol(25.0)
-#   sol_after_tip = max(sol_amount - priority_fee_sol, 0.0)
-#
-#   # recommended approach (use USD estimation first to avoid double-counting):
-#   est_gas_usd = calculate_total_gas_fee(25.0, congestion=None, num_priority_txs=2) or 0.0
-#   usd_for_swap = max(25.0 - est_gas_usd, 0.01)
-#   sol_for_swap = usd_to_sol(usd_for_swap)
-#
-# Troubleshooting:
-#
-# - If you see RPC latency errors during congestion detection, consider increasing the timeout_ms parameter passed to detect_network_congestion.
-# - If your RPC rejects send_raw_transaction, ensure the RPC_URL you provided supports send_raw_transaction and that your keypair is valid.
-# - If you see "No signature returned from RPC" check response payload shape. Different RPC providers return different shapes.
-# - If you want cycle rotation to survive restarts persist current_cycle_idx somewhere (file, redis, etc.).
-#
-# Notes on MEV protection:
-#
-# - Some Jupiter endpoints support "asymmetricSlippage" and other flags; we pass "asymmetricSlippage" param in fetch_jupiter_quote and in the swap payload.
-# - MEV_PROTECTION toggle in env (0/1) will be cast to bool and included in requests.
-# - We also include prioritizationFeeLamports in the swap payload so Jupiter can attach tip lamports to the transaction.
-#
-# Security recommendations:
-#
-# - Keep the PRIVATE_KEY out of version control and limit file access to the service user only.
-# - Add the Telethon session file to your .gitignore (.session or custom name).
-# - Monitor logs for repeated failed RPC calls — that often indicates either an invalid RPC or a rate-limited endpoint.
-#
-# Larger design notes:
-#
-# - The utils module is intended to be the ground-truth for gas & fee calculations. Call calculate_total_gas_fee(...) in sniper.py to ensure consistent accounting.
-# - If you prefer the simpler flow: subtract the SOL tip from the SOL amount being swapped and then subtract the USD equivalent after trade completion. That also works but is a bit less tidy in accounting.
-# - The safer, recommended approach is to estimate USD gas for round-trip and subtract it before converting USD -> SOL.
-#
-# End of file remarks:
-#
-# This file intentionally contains extra documentation and examples because it is a central piece
-# of the bot and we want the important usage notes and gotchas captured at runtime.
-#
-# If you want me to also produce a short unit-test harness (requests mocked) to validate:
-# - calculate_total_gas_fee behavior
-# - get_priority_fee congestion detection behavior (with a mocked RPC)
-# - fetch_jupiter_quote parsing when Jupiter returns different shapes
-#
-# ...tell me and I will prepare a small test file you can run locally under pytest or plain python.
-#
+# internal cycle state variables (module-level)
+cycle_active = False
+reinvestment_amount = float(os.getenv("DAILY_CAPITAL_USD", "25"))
+
+def reset_cycle_state() -> bool:
+    """
+    Reset reinvestment cycle back to base starting amount (reads DAILY_CAPITAL_USD env).
+    Ensures this only runs if `cycle_active` is True (meaning we were in a cycle).
+    Returns True if a reset occurred, False if already reset.
+    """
+    global reinvestment_amount, cycle_active
+    if not cycle_active:
+        # Already reset or not started
+        return False
+    base = float(os.getenv("DAILY_CAPITAL_USD", "25"))
+    reinvestment_amount = base
+    cycle_active = False
+    logger.info("Cycle reset → Starting again from $%.2f base.", reinvestment_amount)
+    return True
+
+def set_cycle_active(active: bool = True) -> None:
+    """
+    Mark the cycle active/inactive. Sniper.py can call this to control resets.
+    """
+    global cycle_active
+    cycle_active = bool(active)
+
 # ============================================================
-# EOF - utils.py
+# Utility: human-readable summary and helpers for debugging
 # ============================================================
+def env_summary() -> str:
+    """
+    Return short textual summary of important env/config values for debugging.
+    """
+    lines = [
+        f"DRY_RUN={DRY_RUN}",
+        f"RPC_URL={RPC_URL}",
+        f"PUBLIC_KEY={PUBLIC_KEY}",
+        f"DAILY_CAPITAL_USD={DAILY_CAPITAL_USD}",
+        f"GAS_BUFFER={GAS_BUFFER}",
+        f"NORMAL_PRIORITY_FEE={NORMAL_PRIORITY_FEE}",
+        f"HIGH_PRIORITY_FEE={HIGH_PRIORITY_FEE}",
+        f"MEV_PROTECTION={MEV_PROTECTION}",
+        f"MANUAL_CONGESTION={MANUAL_CONGESTION}",
+        f"CYCLE_LIMIT={CYCLE_LIMIT}",
+        f"REINVESTMENT_PLAN_PARSED={_REINVESTMENT_PLAN_PARSED}",
+    ]
+    return "\n".join(lines)
+
+# ============================================================
+# Example helper: how to size SOL amount after reserving estimated USD gas
+# ============================================================
+def compute_sol_amount_for_trade(desired_usd: float, congestion: Optional[bool] = None, num_priority_txs: int = 1) -> Optional[float]:
+    """
+    Convenience helper:
+      - Estimate total USD gas needed (priority fee + reserve)
+      - Subtract it from desired_usd and convert remainder to SOL (rounded)
+    Returns SOL amount (float) or None if SOL price unknown.
+    """
+    est_gas_usd = calculate_total_gas_fee(desired_usd, congestion=congestion, num_priority_txs=num_priority_txs)
+    if est_gas_usd is None:
+        return None
+    usd_for_swap = max(desired_usd - est_gas_usd, 0.0)
+    sol_amt = usd_to_sol(usd_for_swap)
+    return sol_amt
+
+# ============================================================
+# Final notes & long README-like section that helps keep the file long & explanatory
+# ============================================================
+# - This utils module centralizes env reading, conversion functions, Jupiter interactions,
+#   solders compatibility helpers, simple reinvestment plan parsing, and basic token utilities.
+#
+# - If you see "Transaction.deserialize failed" logs, it means your installed solders wheel
+#   expects a different deserialization function. The helper _safe_deserialize_transaction tries both.
+#
+# - If your solders transaction signing fails with TypeError, the helper _safe_sign_transaction and
+#   sign_transaction handle the two common signatures (.sign([keypair]) and .sign(keypair)).
+#
+# - To estimate fees for a trade of US$25, using current congestion detection:
+#       est = calculate_total_gas_fee(25.0, congestion=None, num_priority_txs=2)
+#       sol_amount = usd_to_sol(25.0 - (est or 0.0))
+#
+# - To customize reinvestment plan without changing code, set in your t.env:
+#       REINVESTMENT_PLAN="1:5,2:4,3:3"
+#   The parser will use these values and fall back to builtin for missing days.
+#
+# - If you prefer not to load PRIVATE_KEY at import-time, replace KEYPAIR initialization with a lazy loader:
+#       KEYPAIR = None
+#       def get_keypair(): ...
+#   Let me know and I can provide that version.
+#
+# - Troubleshooting tips:
+#   * If your RPC rejects send_raw_transaction, make sure the RPC supports that method and that your
+#     account has sufficient balances for priority fees.
+#   * If get_sol_price_usd returns 0.0 often, check network connectivity and the JUPITER_PRICE_API URL.
+#
+# - Security reminders:
+#   * Do NOT commit your t.env with PRIVATE_KEY to source control.
+#   * Treat PRIVATE_KEY as a secret.
+#
+# End of utils.py
