@@ -3,7 +3,7 @@ import os
 import json
 import asyncio
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Union, Any
 
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError, RpcError
@@ -27,7 +27,9 @@ from utils import (
     TAKE_PROFIT,
     STOP_LOSS,
     logger,
-    GAS_BUFFER,
+    GAS_BUFFER as UTILS_GAS_BUFFER,
+    NORMAL_PRIORITY_FEE,
+    HIGH_PRIORITY_FEE,
 )
 
 # -------------------------
@@ -74,15 +76,22 @@ def save_balance(balance: float) -> None:
 INITIAL_USD_BALANCE = float(os.getenv("DAILY_CAPITAL_USD", "25"))
 current_usd_balance = load_balance(INITIAL_USD_BALANCE)
 
-# GAS_BUFFER read from env is already imported from utils, but keep local fallback
+# GAS_BUFFER read from utils (preferred). Local fallback kept for safety
 try:
-    GAS_BUFFER = float(os.getenv("GAS_BUFFER", str(GAS_BUFFER)))
+    GAS_BUFFER = float(os.getenv("GAS_BUFFER", str(UTILS_GAS_BUFFER)))
 except Exception:
-    GAS_BUFFER = 0.009
+    GAS_BUFFER = float(os.getenv("GAS_BUFFER", "0.009"))
 
-# Tip fees (fixed per tx, in SOL) - used as fallback / quick check
-NORMAL_TIP_SOL = float(os.getenv("NORMAL_TIP_SOL", "0.015"))
-CONGESTION_TIP_SOL = float(os.getenv("CONGESTION_TIP_SOL", "0.1"))
+# Tip fees (fixed per tx, in SOL) - used as fallback / quick check.
+# Prefer values from utils (NORMAL_PRIORITY_FEE, HIGH_PRIORITY_FEE) which are driven by t.env.
+try:
+    NORMAL_TIP_SOL = float(os.getenv("NORMAL_TIP_SOL", str(NORMAL_PRIORITY_FEE)))
+except Exception:
+    NORMAL_TIP_SOL = 0.015
+try:
+    CONGESTION_TIP_SOL = float(os.getenv("CONGESTION_TIP_SOL", str(HIGH_PRIORITY_FEE)))
+except Exception:
+    CONGESTION_TIP_SOL = 0.1
 
 # -------------------------
 # Telegram session
@@ -133,10 +142,7 @@ def advance_cycle_after_midnight() -> None:
     """
     global current_cycle_day
     current_cycle_day += 1
-    # If utils has a plan beyond 2 days, it's fine: get_daily_reinvestment_plan will use the day index.
-    # But to keep cycle small, if the plan is exactly 2 days in your example, wrap at 2.
-    # We don't know the plan length programmatically here (utils could expose it), so keep it simple:
-    # wrap modulo 7 (safe upper bound) to avoid unbounded growth; get_daily_reinvestment_plan will fallback.
+    # If utils has a plan beyond 7 days it's fine; this ensures we don't grow unbounded.
     if current_cycle_day > 7:
         current_cycle_day = 1
 
@@ -159,7 +165,11 @@ def get_next_investment() -> float:
 # -------------------------
 def calculate_gas_fee_sol_from_priority(congestion: bool) -> float:
     """Return SOL gas fee depending on congestion flag (simple tip values)."""
-    return CONGESTION_TIP_SOL if congestion else NORMAL_TIP_SOL
+    # Prefer utils constants when available
+    try:
+        return CONGESTION_TIP_SOL if congestion else NORMAL_TIP_SOL
+    except Exception:
+        return 0.015 if not congestion else 0.1
 
 
 def estimate_fee_and_adjust_usd(usd_amount: float, congestion: Optional[bool]) -> float:
@@ -299,7 +309,8 @@ def handle_cycle_reset() -> None:
         # rotate the cycle day forward (advance_cycle_after_midnight already handles wrap)
         advance_cycle_after_midnight()
         utils.clear_processed_ca()
-        logger.info("Local cycle reset performed. New cycle day = %s, today's limit = %s", current_cycle_day, current_daily_limit())
+        logger.info("Local cycle reset performed. New cycle day = %s, today's limit = %s", current_cycle_day,
+                    current_daily_limit())
     except Exception as e:
         logger.exception("Error during handle_cycle_reset: %s", e)
 
@@ -368,7 +379,11 @@ async def handle_new_message(event) -> None:
         # Estimate / reserve USD fees using utils.calculate_total_gas_fee when possible
         # First decide congestion flag via get_priority_fee() (in SOL)
         priority_fee_sol_buy = get_priority_fee()
-        congestion_flag_buy = priority_fee_sol_buy > NORMAL_TIP_SOL
+        # Prefer reading priority fee from utils; fallback to fallback env constants for threshold detection
+        try:
+            congestion_flag_buy = priority_fee_sol_buy > (NORMAL_TIP_SOL or NORMAL_PRIORITY_FEE)
+        except Exception:
+            congestion_flag_buy = bool(priority_fee_sol_buy > NORMAL_PRIORITY_FEE)
 
         # Use USD estimator to adjust the investable USD down by estimated fees (prefer this)
         usd_to_invest_after_est_fee = estimate_fee_and_adjust_usd(usd_invest, congestion_flag_buy)
@@ -416,7 +431,11 @@ async def handle_new_message(event) -> None:
                 await asyncio.sleep(20)
                 continue
 
-            profit_loss_pct = ((current_cap - buy_market_cap) / buy_market_cap) * 100
+            # NOTE: protect division by zero
+            try:
+                profit_loss_pct = ((current_cap - buy_market_cap) / buy_market_cap) * 100
+            except Exception:
+                profit_loss_pct = 0.0
 
             if profit_loss_pct >= TAKE_PROFIT:
                 logger.info("✅ Take Profit triggered: %.2f%%", profit_loss_pct)
@@ -430,7 +449,10 @@ async def handle_new_message(event) -> None:
 
         # Prepare sell: determine updated congestion & fees
         priority_fee_sol_sell = get_priority_fee()
-        congestion_flag_sell = priority_fee_sol_sell > NORMAL_TIP_SOL
+        try:
+            congestion_flag_sell = priority_fee_sol_sell > (NORMAL_TIP_SOL or NORMAL_PRIORITY_FEE)
+        except Exception:
+            congestion_flag_sell = bool(priority_fee_sol_sell > NORMAL_PRIORITY_FEE)
 
         # Execute sell (with retries)
         if DRY_RUN:
@@ -452,8 +474,11 @@ async def handle_new_message(event) -> None:
 
         # Compute PnL % using market caps (best-effort)
         profit_loss_pct = 0.0
-        if buy_market_cap and sell_market_cap:
-            profit_loss_pct = ((sell_market_cap - buy_market_cap) / buy_market_cap) * 100
+        try:
+            if buy_market_cap and sell_market_cap:
+                profit_loss_pct = ((sell_market_cap - buy_market_cap) / buy_market_cap) * 100
+        except Exception:
+            profit_loss_pct = 0.0
 
         # Compound the USD investment by PnL % (positive or negative)
         compounded = usd_invest * (1 + (profit_loss_pct / 100.0))
@@ -463,8 +488,6 @@ async def handle_new_message(event) -> None:
 
         # Convert actual tip SOL costs to USD and subtract (we used USD estimator earlier, but subtract actual tip SOLs too)
         # For priority fees we will use the SOL tip values (priority_fee_sol_buy/sell) if estimator not present.
-        # If you want to subtract actual per-tx RPC fees, you'd need to capture them from the RPC responses.
-        # Here we translate the SOL tip into USD equivalently and subtract twice (buy+sell).
         compounded_after_tips = subtract_tip_cost(compounded_after_buffer, priority_fee_sol_buy)
         compounded_after_tips = subtract_tip_cost(compounded_after_tips, priority_fee_sol_sell)
 
@@ -511,21 +534,4 @@ async def handle_new_message(event) -> None:
             handle_cycle_reset()
 
     except (RpcError, FloodWaitError) as rpc_e:
-        logger.warning("Telethon RPC error: %s", rpc_e)
-    except Exception as e:
-        logger.exception("Error in handle_new_message: %s", e)
-
-
-# -------------------------
-# Auto reconnect wrapper
-# -------------------------
-async def start_client() -> None:
-    """
-    Run the Telegram client and auto-reconnect on disconnects.
-    """
-    while True:
-        try:
-            async with client:
-                client.add_event_handler(handle_new_message, events.NewMessage(chats=TARGET_CHANNEL_ID))
-                logger.info("Listening for new messages on %s...", TARGET_CHANNEL_ID)
-                await c
+        
