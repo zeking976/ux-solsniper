@@ -224,6 +224,7 @@ def jupiter_buy_token(contract_mint: str, sol_amount: float, congestion_flag: bo
         if not quote:
             logger.warning("No Jupiter quote for BUY (mint=%s, lamports=%d).", contract_mint, amount_lamports)
             return None
+        # execute_jupiter_swap_from_quote expects `congestion` kw param
         return execute_jupiter_swap_from_quote(quote, congestion=congestion_flag)
     except Exception as e:
         logger.exception("jupiter_buy_token error: %s", e)
@@ -420,6 +421,13 @@ async def handle_new_message(event) -> None:
                     logger.warning("Final buy failed for %s; skipping this CA.", ca)
                     return
 
+        # If buy succeeded (not simulated), mark cycle active so reset can occur later
+        try:
+            if not DRY_RUN and hasattr(utils, "set_cycle_active") and callable(utils.set_cycle_active):
+                utils.set_cycle_active(True)
+        except Exception as e:
+            logger.debug("utils.set_cycle_active call failed (non-fatal): %s", e)
+
         # Record buy market cap (for PnL)
         buy_market_cap = await fetch_market_cap_with_retry(ca)
         logger.info("Buy Market Cap: %s", buy_market_cap)
@@ -522,16 +530,4 @@ async def handle_new_message(event) -> None:
             # sleep until next 00:00 UTC
             next_cycle = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
             sleep_seconds = (next_cycle - now).total_seconds()
-            logger.info(
-                "Daily limit (%s) reached. Sleeping %.2fh until 00:00 UTC...",
-                current_daily_limit(),
-                sleep_seconds / 3600.0,
-            )
-            # Sleep (non-blocking)
-            await asyncio.sleep(sleep_seconds)
-
-            # Reset using centralized handler (will respect CYCLE_LIMIT==0)
-            handle_cycle_reset()
-
-    except (RpcError, FloodWaitError) as rpc_e:
-        
+           
