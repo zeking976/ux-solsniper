@@ -44,6 +44,10 @@ TARGET_CHANNEL_ID = int(os.getenv("TARGET_CHANNEL_ID"))
 BALANCE_FILE = "balance.json"
 
 def load_balance(default: float) -> float:
+    """
+    Load last persisted USD balance from balance.json.
+    If not found, return the provided default.
+    """
     if os.path.exists(BALANCE_FILE):
         try:
             with open(BALANCE_FILE, "r") as f:
@@ -54,6 +58,9 @@ def load_balance(default: float) -> float:
     return default
 
 def save_balance(balance: float) -> None:
+    """
+    Persist the current USD balance to balance.json.
+    """
     try:
         with open(BALANCE_FILE, "w") as f:
             json.dump({"usd_balance": balance}, f)
@@ -99,11 +106,19 @@ else:
 current_cycle_idx = 0
 
 def current_daily_limit() -> int:
+    """
+    Returns the current daily trade limit.
+    If a cycle plan exists, pull the limit for the current index.
+    Otherwise use static CYCLE_LIMIT.
+    """
     if _cycle_plan:
         return int(_cycle_plan[current_cycle_idx])
     return int(CYCLE_LIMIT)
 
 def advance_cycle_after_midnight() -> None:
+    """
+    Rotate to the next cycle after midnight UTC.
+    """
     global current_cycle_idx
     if _cycle_plan:
         current_cycle_idx = (current_cycle_idx + 1) % len(_cycle_plan)
@@ -112,6 +127,10 @@ def advance_cycle_after_midnight() -> None:
 # Helper: calculate next investment (compounds)
 # -------------------------
 def get_next_investment() -> float:
+    """
+    Get the USD amount for the next trade,
+    subtracting a gas buffer reserve.
+    """
     global current_usd_balance
     invest = save_gas_reserve_after_trade(current_usd_balance, GAS_BUFFER)
     return max(invest, 0.01)
@@ -120,6 +139,9 @@ def get_next_investment() -> float:
 # Robust market cap fetch with retries
 # -------------------------
 async def fetch_market_cap_with_retry(ca: str, retries: int = 3, delay: int = 2) -> float:
+    """
+    Try to fetch market cap with retry logic to handle intermittent RPC/API issues.
+    """
     for attempt in range(1, retries + 1):
         mcap = get_market_cap(ca)
         if mcap:
@@ -132,6 +154,10 @@ async def fetch_market_cap_with_retry(ca: str, retries: int = 3, delay: int = 2)
 # Jupiter helpers
 # -------------------------
 def jupiter_buy_token(contract_mint: str, sol_amount: float, congestion_flag: bool) -> str | None:
+    """
+    Execute a Jupiter swap from SOL -> token.
+    Returns tx signature or None.
+    """
     try:
         amount_lamports = int(sol_amount * LAMPORTS_PER_SOL)
         if amount_lamports <= 0:
@@ -147,6 +173,10 @@ def jupiter_buy_token(contract_mint: str, sol_amount: float, congestion_flag: bo
         return None
 
 def jupiter_sell_token(contract_mint: str, congestion_flag: bool) -> str | None:
+    """
+    Execute a Jupiter swap from token -> SOL.
+    Returns tx signature or None.
+    """
     try:
         raw_balance = get_token_balance_lamports(contract_mint)
         if raw_balance <= 0:
@@ -170,6 +200,9 @@ daily_trades = 0
 # Helper: apply tip cost from t.env to balance (USD equivalent)
 # -------------------------
 def subtract_tip_cost(usd_balance: float, tip_sol: float) -> float:
+    """
+    Convert the given tip cost in SOL into USD equivalent and subtract it from balance.
+    """
     try:
         usd_per_sol = usd_to_sol(1)  # inverse: $1 worth in SOL
         usd_cost = tip_sol / usd_per_sol
@@ -178,9 +211,34 @@ def subtract_tip_cost(usd_balance: float, tip_sol: float) -> float:
         return usd_balance
 
 # -------------------------
+# Trade reporting
+# -------------------------
+def report_trade_summary(ca: str, buy_mc: float, sell_mc: float, pnl: float,
+                        tx_buy: str, tx_sell: str, fee_buy: float, fee_sell: float,
+                        balance: float) -> None:
+    """
+    Sends a formatted Telegram message with trade summary.
+    """
+    send_telegram_message(
+        f"\ud83d\udcca Trade Complete\n"
+        f"CA: {ca}\n"
+        f"Buy MC: {buy_mc}\n"
+        f"Sell MC: {sell_mc}\n"
+        f"PnL: {pnl:.2f}%\n"
+        f"Tx Buy: {tx_buy}\n"
+        f"Tx Sell: {tx_sell}\n"
+        f"Priority Fee Buy: {fee_buy:.6f} SOL\n"
+        f"Priority Fee Sell: {fee_sell:.6f} SOL\n"
+        f"Balance after compounding: ${balance:.2f}"
+    )
+
+# -------------------------
 # Handle new Telegram messages
 # -------------------------
 async def handle_new_message(event):
+    """
+    Handle a new CA message from the monitored Telegram channel.
+    """
     global current_usd_balance, daily_trades
 
     try:
@@ -279,18 +337,10 @@ async def handle_new_message(event):
 
         daily_trades += 1
 
-        send_telegram_message(
-            f"📊 Trade Complete\n"
-            f"CA: {ca}\n"
-            f"Buy MC: {buy_market_cap}\n"
-            f"Sell MC: {sell_market_cap}\n"
-            f"PnL: {profit_loss_pct:.2f}%\n"
-            f"Tx Buy: {tx_buy}\n"
-            f"Tx Sell: {tx_sell}\n"
-            f"Priority Fee Buy: {priority_fee_buy:.6f} SOL\n"
-            f"Priority Fee Sell: {priority_fee_sell:.6f} SOL\n"
-            f"Balance after compounding: ${current_usd_balance:.2f}"
-        )
+        # report summary
+        report_trade_summary(ca, buy_market_cap, sell_market_cap, profit_loss_pct,
+                             tx_buy, tx_sell, priority_fee_buy, priority_fee_sell,
+                             current_usd_balance)
 
         save_processed_ca(ca)
 
@@ -317,6 +367,9 @@ async def handle_new_message(event):
 # Auto reconnect wrapper
 # -------------------------
 async def start_client():
+    """
+    Continuously run the Telegram client, reconnecting if disconnected.
+    """
     while True:
         try:
             async with client:
@@ -331,6 +384,9 @@ async def start_client():
 # Main
 # -------------------------
 def main():
+    """
+    Entry point for sniper bot.
+    """
     logger.info("Starting sniper bot...")
     asyncio.run(start_client())
 
