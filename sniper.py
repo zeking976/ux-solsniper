@@ -532,4 +532,4 @@ async def handle_new_message(event) -> None:
             sleep_seconds = (next_cycle - now).total_seconds()
 if sleep_seconds > 0:
     logger.info(f"Sleeping for {sleep_seconds/3600:.2f} hours until next cycle at {next_cycle}")
-    time.sleep(sleep_seconds)   
+    time.sleep(sleep_seconds)  
