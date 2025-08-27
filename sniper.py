@@ -9,12 +9,11 @@ from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError, RpcError
 
 # Local utils (centralized helpers and env)
-import utils
 from utils import (
     DRY_RUN,
     usd_to_sol,
     sol_to_usd,
-    get_market_cap,
+    get_market_cap_from_dexscreener as get_market_cap,
     save_gas_reserve_after_trade,
     send_telegram_message,
     save_processed_ca,
@@ -531,5 +530,6 @@ async def handle_new_message(event) -> None:
             next_cycle = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
             sleep_seconds = (next_cycle - now).total_seconds()
 if sleep_seconds > 0:
-    logger.info(f"Sleeping for {sleep_seconds/3600:.2f} hours until next cycle at {next_cycle}")
-    time.sleep(sleep_seconds)  
+    logger.info("Sleeping for %.2f hours until next cycle at %s",
+                sleep_seconds/3600, next_cycle)
+    await asyncio.sleep(sleep_seconds)
