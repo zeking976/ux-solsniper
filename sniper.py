@@ -280,4 +280,155 @@ async def handle_new_message(event) -> None:
     """
     Processes new messages from target channel.
     - Extract CA using utils.extract_contract_address
-    -
+    - Check if CA is valid and not already processed
+    - Execute buy logic with Jupiter API and record trade
+    """
+    global current_usd_balance, daily_trades
+
+    try:
+        # Extract message content
+        message = event.message
+        if not message or not hasattr(message, 'text') or not message.text:
+            logger.warning("Received empty or invalid message event.")
+            return
+
+        # Extract contract address
+        contract_address = utils.extract_contract_address(message_text=message.text, message_obj=message)
+        if not contract_address:
+            logger.info("No valid contract address found in message: %s", message.text[:50])
+            return
+
+        # Check if CA is already processed today
+        if is_ca_processed(contract_address):
+            logger.info("Contract address %s already processed, skipping.", contract_address)
+            return
+
+        # Log the new CA
+        logger.info("New contract address detected: %s", contract_address)
+
+        # Fetch market cap with retry
+        market_cap = await fetch_market_cap_with_retry(contract_address)
+        if market_cap == 0.0:
+            logger.warning("Failed to fetch market cap for %s after retries, skipping.", contract_address)
+            save_processed_ca(contract_address)
+            return
+        elif market_cap > 1_000_000:  # Adjustable threshold
+            logger.warning("Market cap %f USD too high for sniper, skipping.", market_cap)
+            save_processed_ca(contract_address)
+            return
+
+        # Acquire lock for balance update
+        async with balance_lock:
+            invest_usd = get_next_investment()
+            if invest_usd >= current_usd_balance:
+                logger.warning("Insufficient balance for investment: %f vs %f", invest_usd, current_usd_balance)
+                return
+
+            # Detect network congestion
+            congestion = utils.detect_network_congestion()
+            adjusted_usd = estimate_fee_and_adjust_usd(invest_usd, congestion)
+            sol_amount = usd_to_sol(adjusted_usd)
+            if not sol_amount or sol_amount <= 0:
+                logger.error("Invalid SOL amount calculated: %f", sol_amount)
+                return
+
+            # Execute buy via Jupiter
+            priority_fee_sol = calculate_gas_fee_sol_from_priority(congestion)
+            tx_signature = jupiter_buy_token(contract_address, sol_amount, congestion)
+            if not tx_signature or (DRY_RUN and tx_signature == "SIMULATED_TX_SIGNATURE"):
+                logger.error("Buy execution failed or in DRY_RUN mode: %s", tx_signature)
+                if not DRY_RUN:
+                    save_processed_ca(contract_address)
+                return
+
+            # Update balance after tip cost
+            current_usd_balance = subtract_tip_cost(current_usd_balance, priority_fee_sol)
+            save_balance(current_usd_balance)
+
+            # Record the buy
+            utils.record_buy(
+                token=contract_address,
+                coin_name=utils.resolve_token_name(contract_address),
+                buy_market_cap=market_cap,
+                amount_usd=adjusted_usd,
+                priority_fee_sol=priority_fee_sol
+            )
+            daily_trades += 1
+            logger.info("Buy executed successfully, TX: %s, Daily trades: %d/%d", tx_signature, daily_trades, current_daily_limit())
+
+            # Mark as processed
+            save_processed_ca(contract_address)
+
+            # Check for sell condition (basic TP/SL)
+            await check_sell_condition(contract_address, market_cap, tx_signature, priority_fee_sol)
+
+    except FloodWaitError as e:
+        logger.warning("Flood wait detected: %d seconds. Pausing...", e.seconds)
+        await asyncio.sleep(e.seconds)
+    except Exception as e:
+        logger.exception("Error in handle_new_message: %s", str(e))
+        return
+# -------------------------
+# Sell condition checker
+# -------------------------
+async def check_sell_condition(contract_address: str, buy_market_cap: float, tx_buy: str, fee_buy_sol: float) -> None:
+    global current_usd_balance, daily_trades
+
+    try:
+        async with balance_lock:
+            while True:
+                token_balance = get_token_balance_lamports(contract_address)
+                if token_balance <= 0:
+                    logger.info("No token balance to sell for %s, exiting loop.", contract_address)
+                    break
+
+                sell_market_cap = await fetch_market_cap_with_retry(contract_address)
+                if sell_market_cap == 0.0:
+                    logger.warning("Failed to fetch sell market cap, retrying...")
+                    await asyncio.sleep(5)
+                    continue
+
+                profit_percent = ((sell_market_cap - buy_market_cap) / buy_market_cap) * 100
+                if profit_percent >= TAKE_PROFIT:
+                    logger.info("Take Profit hit: %.2f%% >= %.2f%%", profit_percent, TAKE_PROFIT)
+                elif profit_percent <= STOP_LOSS:
+                    logger.info("Stop Loss hit: %.2f%% <= %.2f%%", profit_percent, STOP_LOSS)
+                else:
+                    logger.debug("Holding %s, profit: %.2f%% (TP: %.2f%%, SL: %.2f%%)", contract_address, profit_percent, TAKE_PROFIT, STOP_LOSS)
+                    await asyncio.sleep(60)  # Check every minute
+                    continue
+
+                # Execute sell
+                congestion = utils.detect_network_congestion()
+                priority_fee_sol = calculate_gas_fee_sol_from_priority(congestion)
+                tx_sell = jupiter_sell_token(contract_address, congestion)
+                if not tx_sell or (DRY_RUN and tx_sell == "SIMULATED_TX_SIGNATURE"):
+                    logger.error("Sell execution failed or in DRY_RUN mode: %s", tx_sell)
+                    if not DRY_RUN:
+                        break
+                    continue
+
+                # Calculate profit and update balance
+                profit_usd = (sell_market_cap - buy_market_cap) * (token_balance / LAMPORTS_PER_SOL) * (1 / buy_market_cap)
+                current_usd_balance = subtract_tip_cost(current_usd_balance + profit_usd, priority_fee_sol)
+                save_balance(current_usd_balance)
+
+                # Record the sell and report
+                utils.record_sell(contract_address, sell_market_cap, profit_usd, priority_fee_sol)
+                report_trade_summary(
+                    ca=contract_address,
+                    buy_mc=buy_market_cap,
+                    sell_mc=sell_market_cap,
+                    pnl=profit_percent,
+                    tx_buy=tx_buy,
+                    tx_sell=tx_sell,
+                    fee_buy_sol=fee_buy_sol,
+                    fee_sell_sol=priority_fee_sol,
+                    balance=current_usd_balance
+                )
+                daily_trades += 1
+                logger.info("Sell executed successfully, TX: %s, Daily trades: %d/%d", tx_sell, daily_trades, current_daily_limit())
+                break
+
+    except Exception as e:
+        logger.exception("Error in check_sell_condition for %s: %s", contract_address, str(e))
