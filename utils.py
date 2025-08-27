@@ -503,4 +503,395 @@ def calculate_total_gas_fee(
             base_fee_usd = float(GAS_BUFFER_USD)
         else:
             reserve_pct = GAS_BUFFER
-            base_fee_usd = amount_in_usd * float(reserve_
+            base_fee_usd = amount_in_usd * float(reserve_pct)
+
+    # Priority fee component in USD
+    if congestion is None:
+        congestion = detect_network_congestion()
+    priority_fee_sol = HIGH_PRIORITY_FEE if congestion else NORMAL_PRIORITY_FEE
+    priority_fee_usd_per_tx = priority_fee_sol * sol_price
+
+    # Multiply by number of prioritized txs (e.g., 1 buy or 2 buy+sell)
+    total_priority_usd = priority_fee_usd_per_tx * max(int(num_priority_txs), 1)
+
+    total_usd = base_fee_usd + total_priority_usd
+    return round(total_usd, 6)
+
+def save_gas_reserve_after_trade(current_usd_balance: float, reserve_pct: float = GAS_BUFFER) -> float:
+    """
+    After each trade completes, skim off a % of the *current* balance to keep as a small gas runway.
+    This is intentionally tiny (default 0.9%), and *compounding code in sniper.py* handles reinvest sizing.
+    """
+    reserve = current_usd_balance * float(reserve_pct)
+    new_balance = current_usd_balance - reserve
+    logger.info(
+        "Saved gas reserve %.6f USD (%.4f%%). New available balance: %.6f",
+        reserve, float(reserve_pct) * 100, new_balance
+    )
+    return round(new_balance, 6)
+
+# ============================================================
+# Token balance (RPC)
+# ============================================================
+def get_token_balance_lamports(token_mint: str) -> int:
+    """
+    Sum lamports across all token accounts for PUBLIC_KEY / token_mint.
+    """
+    try:
+        body = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getTokenAccountsByOwner",
+            "params": [
+                PUBLIC_KEY,
+                {"mint": token_mint},
+                {"encoding": "jsonParsed"}
+            ]
+        }
+        r = requests.post(RPC_URL, json=body, timeout=8)
+        r.raise_for_status()
+        data = r.json()
+        accounts = data.get("result", {}).get("value", [])
+        total = 0
+        for acc in accounts:
+            amount_str = (
+                acc.get("account", {})
+                  .get("data", {})
+                  .get("parsed", {})
+                  .get("info", {})
+                  .get("tokenAmount", {})
+                  .get("amount", "0")
+            )
+            try:
+                total += int(amount_str)
+            except Exception:
+                continue
+        return total
+    except Exception as e:
+        logger.exception("get_token_balance_lamports error: %s", e)
+        return 0
+
+# ============================================================
+# Jupiter quote & swap (Anti-MEV, solders-compatible)
+# ============================================================
+def fetch_jupiter_quote(
+    input_mint: str,
+    output_mint: str,
+    amount: int,
+    slippage_bps: int = 50,
+    only_direct: bool = False
+) -> Optional[Dict[str, Any]]:
+    """
+    Fetch a quote route from Jupiter API for a token swap.
+    Returns the *first* route dict (quote) or None.
+    """
+    try:
+        params = {
+            "inputMint":          input_mint,
+            "outputMint":         output_mint,
+            "amount":             str(amount),
+            "slippageBps":        slippage_bps,
+            "onlyDirectRoutes":   only_direct,
+        }
+        # add asymmetricSlippage only when MEV_PROTECTION is truthy
+        if MEV_PROTECTION:
+            params["asymmetricSlippage"] = True
+
+        r = requests.get(JUPITER_QUOTE_API, params=params, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+
+        # v6 often returns {"data":[{...route...}, ...]}
+        if isinstance(data, dict) and "data" in data and isinstance(data["data"], list) and data["data"]:
+            return data["data"][0]
+
+        # Some servers respond with {"route": {...}}
+        if isinstance(data, dict) and data.get("route"):
+            return data.get("route")
+
+        logger.warning("No usable route in Jupiter quote: %s", data)
+        return None
+    except Exception as e:
+        logger.exception("fetch_jupiter_quote error: %s", e)
+        return None
+
+# ---------- solders compatibility helpers ----------
+def _safe_deserialize_transaction(raw: bytes) -> Transaction:
+    """
+    Handle solders builds that prefer Transaction.deserialize(raw) vs Transaction.from_bytes(raw).
+    """
+    # Try deserialize first (most common)
+    try:
+        return Transaction.deserialize(raw)
+    except Exception as e1:
+        logger.debug("Transaction.deserialize failed; trying Transaction.from_bytes. err=%s", e1)
+        try:
+            # Some wheels require from_bytes
+            return Transaction.from_bytes(raw)  # type: ignore[attr-defined]
+        except Exception as e2:
+            logger.error("Both Transaction.deserialize and from_bytes failed. e1=%s e2=%s", e1, e2)
+            raise
+
+def _safe_sign_transaction(tx: Transaction, keypair: Keypair) -> None:
+    """
+    Some solders builds want tx.sign([kp]); others want tx.sign(kp).
+    Try list first, then single. If both fail, raise the final exception.
+    """
+    try:
+        tx.sign([keypair])  # works on many recent solders versions
+        return
+    except Exception as e1:
+        logger.debug(".sign([KEYPAIR]) failed; trying .sign(KEYPAIR). err=%s", e1)
+        try:
+            tx.sign(keypair)  # type: ignore[arg-type]
+            return
+        except Exception as e2:
+            logger.error("Failed to sign transaction via both styles. e1=%s e2=%s", e1, e2)
+            # re-raise the last exception to the caller
+            raise
+
+def execute_jupiter_swap_from_quote(quote: dict, congestion: bool = False) -> Optional[str]:
+    """
+    Execute a Jupiter swap using solders.Transaction.
+    Handles DRY_RUN, priority fee, and MEV protection.
+    Returns the transaction signature (str) or None on failure.
+    """
+    if DRY_RUN:
+        logger.info("[DRY RUN] execute_jupiter_swap_from_quote - simulated")
+        return "SIMULATED_TX_SIGNATURE"
+
+    try:
+        payload = {
+            "quoteResponse": quote,
+            "userPublicKey": PUBLIC_KEY,
+            "wrapAndUnwrapSol": True,
+            "asymmetricSlippage": bool(MEV_PROTECTION),
+        }
+
+        priority_fee_sol = get_priority_fee(congestion)
+        payload["prioritizationFeeLamports"] = int(priority_fee_sol * 1_000_000_000)
+
+        r = requests.post(JUPITER_SWAP_API, json=payload, timeout=20)
+        r.raise_for_status()
+        swap_json = r.json()
+
+        # Extract base64 transaction
+        swap_tx_b64 = (
+            swap_json.get("swapTransaction")
+            or swap_json.get("data", {}).get("swapTransaction")
+        )
+        if not swap_tx_b64:
+            # Fallback: try to detect a long base64 string in the response
+            for v in swap_json.values():
+                if isinstance(v, str) and len(v) > 100:
+                    # additional heuristic: basic base64 charset check
+                    if set(v[:4]).issubset(set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")):
+                        swap_tx_b64 = v
+                        break
+
+        if not swap_tx_b64:
+            logger.error("Swap API did not return a swapTransaction: %s", swap_json)
+            return None
+
+        raw = base64.b64decode(swap_tx_b64)
+        tx = _safe_deserialize_transaction(raw)
+
+        _safe_sign_transaction(tx, KEYPAIR)
+        serialized = bytes(tx)
+
+        resp = RPC.send_raw_transaction(
+            serialized,
+            opts=TxOpts(skip_preflight=False, preflight_commitment="processed"),
+        )
+
+        sig = None
+        if isinstance(resp, dict):
+            sig = resp.get("result") or resp.get("signature")
+        elif isinstance(resp, str):
+            sig = resp
+
+        if not sig:
+            logger.error("No signature returned from RPC: %s", resp)
+            return None
+
+        logger.info("Broadcasted tx signature: %s", sig)
+        return sig
+
+    except Exception as e:
+        logger.exception("execute_jupiter_swap_from_quote error: %s", e)
+        return None
+
+def sign_transaction(tx, keypair):
+    """
+    Backwards-compatible wrapper to sign a solders transaction object.
+    Kept for external modules that expect a simple helper.
+    """
+    try:
+        tx.sign([keypair])
+    except TypeError:
+        # some builds expect the keypair directly
+        tx.sign(keypair)
+    return tx
+
+# ============================================================
+# Reinvestment Plan Utilities
+# ============================================================
+
+def _parse_reinvestment_plan_env(raw: str) -> Dict[int, int]:
+    """
+    Parse REINVESTMENT_PLAN env format (e.g. "1:5,2:4,3:3") into {day:reinvestments}.
+    Returns an empty dict on parse failure or empty input.
+    """
+    if not raw:
+        return {}
+    plan: Dict[int, int] = {}
+    try:
+        parts = [p.strip() for p in raw.split(",") if p.strip()]
+        for part in parts:
+            if ":" in part:
+                left, right = part.split(":", 1)
+                day = int(left.strip())
+                val = int(right.strip())
+                plan[day] = val
+    except Exception as e:
+        logger.warning("Failed to parse REINVESTMENT_PLAN env: %s (%s)", raw, e)
+        return {}
+    return plan
+
+# cached parsed env plan (if provided)
+_REINVESTMENT_PLAN_PARSED = _parse_reinvestment_plan_env(REINVESTMENT_PLAN_RAW)
+
+def get_daily_reinvestment_plan(day: int) -> int:
+    """
+    Returns the number of reinvestments allowed for a given cycle day.
+
+    Behavior:
+      - If REINVESTMENT_PLAN env is set (e.g. "1:5,2:4"), it is used.
+      - Otherwise defaults to builtin plan {1:5, 2:4}.
+      - If day requested not found, default to the day 1 plan.
+
+    Example:
+        Day 1 → 5 reinvestments
+        Day 2 → 4 reinvestments
+    """
+    # builtin fallback
+    builtin_plan = {1: 5, 2: 4}
+
+    # If user provided a custom env plan, merge with builtin where missing
+    if _REINVESTMENT_PLAN_PARSED:
+        plan = dict(builtin_plan)
+        plan.update(_REINVESTMENT_PLAN_PARSED)
+    else:
+        plan = builtin_plan
+
+    return plan.get(day, plan[1])
+
+# ============================================================
+# Small utilities used by reporting / other modules
+# ============================================================
+def md_code(s: str) -> str:
+    """
+    Wrap code/addresses in monospace Markdown to send to Telegram.
+    """
+    if not s:
+        return "`N/A`"
+    # escape backticks if any
+    safe = s.replace("`", "'")
+    return f"`{safe}`"
+
+def resolve_token_name(contract_address: str) -> Optional[str]:
+    """
+    Best-effort token name resolver. For now this is a light wrapper that tries:
+      - Dexscreener -> pair name
+      - Simple heuristics
+    Returns token name (string) or None if unknown.
+    """
+    if not contract_address:
+        return None
+    try:
+        base = f"https://api.dexscreener.io/latest/dex/pairs/solana/{contract_address}"
+        r = requests.get(base, timeout=6)
+        if r.ok:
+            data = r.json()
+            if isinstance(data, dict):
+                # "pair" or "pairs" may contain names
+                if "pair" in data and data["pair"].get("baseToken", {}).get("name"):
+                    return data["pair"]["baseToken"]["name"]
+                if "pairs" in data and data["pairs"]:
+                    p0 = data["pairs"][0]
+                    name = p0.get("pairName") or p0.get("label") or p0.get("baseToken", {}).get("name")
+                    if name:
+                        return name
+    except Exception:
+        pass
+    # fallback: return shortened address
+    return contract_address[:6] + "..." + contract_address[-4:]
+
+# ============================================================
+# Cycle reset helper (user asked to add)
+# ============================================================
+# internal cycle state variables (module-level)
+cycle_active = False
+reinvestment_amount = float(os.getenv("DAILY_CAPITAL_USD", "25"))
+
+def reset_cycle_state() -> bool:
+    """
+    Reset reinvestment cycle back to base starting amount (reads DAILY_CAPITAL_USD env).
+    Ensures this only runs if `cycle_active` is True (meaning we were in a cycle).
+    Returns True if a reset occurred, False if already reset.
+    """
+    global reinvestment_amount, cycle_active
+    if not cycle_active:
+        # Already reset or not started
+        return False
+    base = float(os.getenv("DAILY_CAPITAL_USD", "25"))
+    reinvestment_amount = base
+    cycle_active = False
+    logger.info("Cycle reset → Starting again from $%.2f base.", reinvestment_amount)
+    return True
+
+def set_cycle_active(active: bool = True) -> None:
+    """
+    Mark the cycle active/inactive. Sniper.py can call this to control resets.
+    """
+    global cycle_active
+    cycle_active = bool(active)
+
+# ============================================================
+# Utility: human-readable summary and helpers for debugging
+# ============================================================
+def env_summary() -> str:
+    """
+    Return short textual summary of important env/config values for debugging.
+    """
+    lines = [
+        f"DRY_RUN={DRY_RUN}",
+        f"RPC_URL={RPC_URL}",
+        f"PUBLIC_KEY={PUBLIC_KEY}",
+        f"DAILY_CAPITAL_USD={DAILY_CAPITAL_USD}",
+        f"GAS_BUFFER={GAS_BUFFER}",
+        f"NORMAL_PRIORITY_FEE={NORMAL_PRIORITY_FEE}",
+        f"HIGH_PRIORITY_FEE={HIGH_PRIORITY_FEE}",
+        f"MEV_PROTECTION={MEV_PROTECTION}",
+        f"MANUAL_CONGESTION={MANUAL_CONGESTION}",
+        f"CYCLE_LIMIT={CYCLE_LIMIT}",
+        f"REINVESTMENT_PLAN_PARSED={_REINVESTMENT_PLAN_PARSED}",
+    ]
+    return "\n".join(lines)
+
+# ============================================================
+# Example helper: how to size SOL amount after reserving estimated USD gas
+# ============================================================
+def compute_sol_amount_for_trade(desired_usd: float, congestion: Optional[bool] = None, num_priority_txs: int = 1) -> Optional[float]:
+    """
+    Convenience helper:
+      - Estimate total USD gas needed (priority fee + reserve)
+      - Subtract it from desired_usd and convert remainder to SOL (rounded)
+    Returns SOL amount (float) or None if SOL price unknown.
+    """
+    est_gas_usd = calculate_total_gas_fee(desired_usd, congestion=congestion, num_priority_txs=num_priority_txs)
+    if est_gas_usd is None:
+        return None
+    usd_for_swap = max(desired_usd - est_gas_usd, 0.0)
+    sol_amt = usd_to_sol(usd_for_swap)
+    return sol_amt
