@@ -9,3 +9,5 @@ pytz==2024.1
 cryptography==41.0.3
 schedule==1.2.1
 aiohttp==3.9.5
+pillow==10.4.0
+matplotlib==3.9.2
