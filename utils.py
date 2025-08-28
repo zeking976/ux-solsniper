@@ -12,6 +12,7 @@ import requests
 from dotenv import load_dotenv
 
 # Solana-related imports
+from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solana.rpc.api import Client as SolanaClient
 from solana.rpc.types import TokenAccountOpts
@@ -22,7 +23,7 @@ from solana.publickey import PublicKey
 # ============================================================
 from solana.rpc.api import Client
 from solders.keypair import Keypair
-from solders.transaction import Transaction  # NOTE: some builds prefer Transaction.from_bytes
+from solders.transaction import Transaction
 from solana.rpc.types import TxOpts
 
 # ============================================================
