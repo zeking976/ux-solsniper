@@ -11,6 +11,12 @@ from datetime import datetime, timedelta
 import requests
 from dotenv import load_dotenv
 
+# Solana-related imports
+from solders.pubkey import Pubkey
+from solana.rpc.api import Client as SolanaClient
+from solana.rpc.types import TokenAccountOpts
+from solana.publickey import PublicKey
+
 # ============================================================
 # Solana libs for signing and broadcast (solders-compatible)
 # ============================================================
