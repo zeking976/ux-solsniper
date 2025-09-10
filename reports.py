@@ -40,6 +40,8 @@ REPORTS_FILE = os.getenv("REPORTS_FILE", "trade_logs.json")
 DEFAULT_EXPORT_CSV = os.getenv("REPORT_EXPORT_CSV", "trade_logs_export.csv")
 STOP_LOSS = float(os.getenv("STOP_LOSS", "-20") or -20.0)
 TAKE_PROFIT = float(os.getenv("TAKE_PROFIT", "100") or 100.0)
+BUY_FEE_PERCENT = float(os.getenv("BUY_FEE_PERCENT", "1.0") or 1.0)
+SELL_FEE_PERCENT = float(os.getenv("SELL_FEE_PERCENT", "1.0") or 1.0)
 
 # Validate environment variables
 if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -109,10 +111,12 @@ def record_buy(token: str, coin_name: Optional[str], buy_market_cap: Optional[fl
         "buy_time": datetime.datetime.utcnow().isoformat(),
         "amount_usd": amount_usd,
         "buy_priority_fee": priority_fee_sol,
+        "buy_fee_percent": BUY_FEE_PERCENT,
         "sell_market_cap": None,
         "sell_time": None,
         "profit_usd": None,
         "sell_priority_fee": None,
+        "sell_fee_percent": None,
         "date": str(datetime.datetime.utcnow().date())
     }
     logs = load_logs()
@@ -131,6 +135,7 @@ def record_sell(token: str, sell_market_cap: Optional[float], profit_usd: Option
             entry["sell_time"] = datetime.datetime.utcnow().isoformat()
             entry["profit_usd"] = profit_usd
             entry["sell_priority_fee"] = priority_fee_sol
+            entry["sell_fee_percent"] = SELL_FEE_PERCENT
             coin_name_for_msg = entry.get("coin_name") or "N/A"
             found = True
             break
@@ -142,10 +147,12 @@ def record_sell(token: str, sell_market_cap: Optional[float], profit_usd: Option
             "buy_time": None,
             "amount_usd": None,
             "buy_priority_fee": None,
+            "buy_fee_percent": None,
             "sell_market_cap": sell_market_cap,
             "sell_time": datetime.datetime.utcnow().isoformat(),
             "profit_usd": profit_usd,
             "sell_priority_fee": priority_fee_sol,
+            "sell_fee_percent": SELL_FEE_PERCENT,
             "date": str(datetime.datetime.utcnow().date())
         })
     save_logs(logs)
@@ -159,14 +166,14 @@ def record_sell(token: str, sell_market_cap: Optional[float], profit_usd: Option
 def send_buy_notification(token: str, coin_name: str, amount_usd: float,
                           buy_mcap: Optional[float], priority_fee_sol: Optional[float]) -> None:
     mc_text = f"${buy_mcap:,.0f}" if buy_mcap else "N/A"
-    tip_text = f"{priority_fee_sol:.3f} SOL" if priority_fee_sol else "N/A"
+    tip_text = f"{priority_fee_sol:.3f} SOL ({BUY_FEE_PERCENT}% of amount)" if priority_fee_sol else "N/A"
     msg = (
         f"✅ *BUY EXECUTED*\n"
         f"• Coin: *{coin_name}*\n"
         f"• CA: {md_code(token)}\n"
         f"• Amount: ${amount_usd:.2f}\n"
         f"• Market Cap @ Buy: {mc_text}\n"
-        f"• Tip Paid: {tip_text}\n"
+        f"• Fee: {tip_text}\n"
         f"• SL: {STOP_LOSS:.1f}% | TP: {TAKE_PROFIT:.1f}%"
     )
     send_telegram_message(msg)
@@ -175,14 +182,14 @@ def send_sell_notification(token: str, coin_name: str, sell_mcap: Optional[float
                            profit_usd: Optional[float], priority_fee_sol: Optional[float]) -> None:
     mc_text = f"${sell_mcap:,.0f}" if sell_mcap else "N/A"
     profit_text = f"${profit_usd:.2f}" if profit_usd else "N/A"
-    tip_text = f"{priority_fee_sol:.3f} SOL" if priority_fee_sol else "N/A"
+    tip_text = f"{priority_fee_sol:.3f} SOL ({SELL_FEE_PERCENT}% of amount)" if priority_fee_sol else "N/A"
     msg = (
         f"🟣 *SELL EXECUTED*\n"
         f"• Coin: *{coin_name}*\n"
         f"• CA: {md_code(token)}\n"
         f"• Market Cap @ Sell: {mc_text}\n"
         f"• Profit: {profit_text}\n"
-        f"• Tip Paid: {tip_text}\n"
+        f"• Fee: {tip_text}\n"
         f"• SL: {STOP_LOSS:.1f}% | TP: {TAKE_PROFIT:.1f}%"
     )
     send_telegram_message(msg)
@@ -262,7 +269,7 @@ def generate_meme_image(period_data: Dict[str, Any], period: str, telegram_usern
     profit_sol_text = f"{period_data['total_profit_sol']:.2f} SOL"
     profit_usd_text = f"${period_data['total_profit_usd']:.2f}"
     date_text = period_data['date']
-    
+
     if period == "daily":
         coins = ", ".join(period_data['coins_bought']) if period_data['coins_bought'] else "N/A"
         initial_cap = f"${period_data['initial_capital_usd']:.2f}"
@@ -277,9 +284,9 @@ def generate_meme_image(period_data: Dict[str, Any], period: str, telegram_usern
         card_type = "Monthly Profit Card"
         style = "highly attractive style with glowing effects, neon background, 1080x1080 resolution"
         prompt_text = f"Profit: {profit_sol_text} ({profit_usd_text}), Month: {period_data['month']}, Date: {date_text}"
-    
+
     prompt = f"Generate a {card_type} based on trending meme '{theme}', {style}, with catchy bold font for text: {prompt_text}, neon glow where attractive"
-    
+
     try:
         url = "https://api.google.ai/gemini/v1/images:generate"
         headers = {
@@ -295,12 +302,12 @@ def generate_meme_image(period_data: Dict[str, Any], period: str, telegram_usern
         response = requests.post(url, headers=headers, json=payload, timeout=30)
         response.raise_for_status()
         image_url = response.json().get("images")[0].get("url")  # Adjust based on actual Gemini API response structure
-        
+
         # Download image
         img_response = requests.get(image_url, timeout=30)
         img_response.raise_for_status()
         image_path = f"profit_{period}_{int(datetime.datetime.now().timestamp())}.png"
-        
+
         if period == "monthly" and period_data["daily_profits"]:
             chart_path = generate_chart(period_data["daily_profits"])
             if chart_path:
@@ -316,7 +323,7 @@ def generate_meme_image(period_data: Dict[str, Any], period: str, telegram_usern
         else:
             with open(image_path, "wb") as f:
                 f.write(img_response.content)
-        
+
         logger.info(f"Generated meme image for {period} with theme {theme}")
         return image_path
     except Exception as e:
@@ -375,8 +382,8 @@ def send_monthly_report() -> None:
 def export_to_csv(logs: List[Dict[str, Any]], path: str = DEFAULT_EXPORT_CSV) -> None:
     fieldnames = [
         "date","token","coin_name","amount_usd",
-        "buy_time","buy_market_cap","buy_priority_fee",
-        "sell_time","sell_market_cap","sell_priority_fee",
+        "buy_time","buy_market_cap","buy_priority_fee","buy_fee_percent",
+        "sell_time","sell_market_cap","sell_priority_fee","sell_fee_percent",
         "profit_usd"
     ]
     with open(path,"w",newline="",encoding="utf-8") as csvfile:
