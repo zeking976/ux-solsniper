@@ -8,3 +8,10 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
+import threading
+import subprocess
+
+def run_sniper():
+    subprocess.Popen(["python", "sniper.py"])
+
+threading.Thread(target=run_sniper, daemon=True).start()
