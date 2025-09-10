@@ -6,7 +6,7 @@ from typing import Optional, Union, Any
 
 # Telethon for scraping the channel
 from telethon import TelegramClient, events
-from telethon.errors import FloodWaitError
+from telethon.errors import FloodWaitError, SessionPasswordNeededError, PhoneNumberInvalidError
 
 # Local utils (all helpers, RPC, signing, pricing, reporting)
 import utils
@@ -14,7 +14,7 @@ from utils import (
     DRY_RUN,
     usd_to_sol,
     sol_to_usd,
-    get_market_cap,  # returns market cap (dexscreener -> birdeye)
+    get_market_cap,
     save_gas_reserve_after_trade,
     send_telegram_message,
     save_processed_ca,
@@ -27,9 +27,8 @@ from utils import (
     TAKE_PROFIT,
     STOP_LOSS,
     logger,
-    GAS_BUFFER as UTILS_GAS_BUFFER,
-    NORMAL_PRIORITY_FEE,
-    HIGH_PRIORITY_FEE,
+    BUY_FEE_PERCENT,
+    SELL_FEE_PERCENT,
 )
 
 # --- Load environment (explicit) ---
@@ -45,7 +44,6 @@ TARGET_CHANNEL_ID = int(os.getenv("TARGET_CHANNEL_ID", "0"))
 # --- Persistence for balance ---
 BALANCE_FILE = "balance.json"
 
-
 def load_balance(default: float) -> float:
     if os.path.exists(BALANCE_FILE):
         try:
@@ -56,7 +54,6 @@ def load_balance(default: float) -> float:
             return default
     return default
 
-
 def save_balance(balance: float) -> None:
     try:
         with open(BALANCE_FILE, "w") as f:
@@ -64,19 +61,30 @@ def save_balance(balance: float) -> None:
     except Exception as e:
         logger.warning("Failed to save balance: %s", e)
 
-
 # --- Initial capital & runtime vars ---
 INITIAL_USD_BALANCE = float(os.getenv("DAILY_CAPITAL_USD", "25"))
 current_usd_balance = load_balance(INITIAL_USD_BALANCE)
 
-# --- GAS buffer and tip settings from ENV ---
-GAS_BUFFER = float(os.getenv("GAS_BUFFER_USD", str(UTILS_GAS_BUFFER)))
-NORMAL_TIP_SOL = usd_to_sol(float(os.getenv("NORMAL_TIP_USD", str(NORMAL_PRIORITY_FEE))))
-CONGESTION_TIP_SOL = usd_to_sol(float(os.getenv("CONGESTION_TIP_USD", str(HIGH_PRIORITY_FEE))))
+# --- Telegram client (session file in Termux directory) ---
+session_name = os.path.join("/data/data/com.termux/files/home/ux-solsniper", os.getenv("SESSION_NAME", "sniper_session"))
+client = None
 
-# --- Telethon client (session file name from t.env) ---
-session_name = os.getenv("SESSION_NAME", "sniper_session")
-client = TelegramClient(session_name, API_ID, API_HASH)
+async def initialize_telegram_client():
+    global client
+    session_path = f"{session_name}.session"
+    if not os.path.exists(session_path):
+        logger.error(f"Telegram session file {session_path} not found. Please provide a valid session file.")
+        raise FileNotFoundError(f"Missing session file: {session_path}")
+    try:
+        client = TelegramClient(session_name, API_ID, API_HASH)
+        await client.start()
+        logger.info("Telegram client initialized successfully.")
+    except (SessionPasswordNeededError, PhoneNumberInvalidError) as e:
+        logger.error(f"Telegram client initialization failed: {e}. Please ensure valid session file.")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error initializing Telegram client: {e}")
+        raise
 
 # Constants
 WSOL_MINT = "So11111111111111111111111111111111111111112"
@@ -89,15 +97,10 @@ balance_lock = asyncio.Lock()
 current_cycle_day = 1
 daily_trades = 0
 
-
 # -------------------------
 # Helpers / cycle logic
 # -------------------------
 def current_daily_limit() -> int:
-    """
-    Determine today's allowed number of trades using utils.get_daily_reinvestment_plan.
-    Fallback to CYCLE_LIMIT if parsing fails.
-    """
     try:
         return int(utils.get_daily_reinvestment_plan(current_cycle_day))
     except Exception as e:
@@ -107,33 +110,25 @@ def current_daily_limit() -> int:
             return int(CYCLE_LIMIT[idx])
         return int(CYCLE_LIMIT)
 
-
 def advance_cycle_after_midnight() -> None:
     global current_cycle_day
     current_cycle_day += 1
     if current_cycle_day > 7:
         current_cycle_day = 1
 
-
 def get_next_investment() -> float:
-    """
-    Reserve a small gas runway from current balance and return amount we will invest.
-    """
     global current_usd_balance
-    invest = save_gas_reserve_after_trade(current_usd_balance, GAS_BUFFER)
+    invest = save_gas_reserve_after_trade(current_usd_balance, 0.009)  # Default 0.9% reserve
     return max(invest, 0.01)
 
-
-def calculate_gas_fee_sol_from_priority(congestion: bool) -> float:
-    """Return SOL tip amount depending on congestion flag (uses derived SOL tip env)."""
-    return CONGESTION_TIP_SOL if congestion else NORMAL_TIP_SOL
-
+def calculate_gas_fee_sol_from_priority(amount_usd: float, congestion: bool) -> float:
+    """Calculate fee in SOL based on percentage of transaction amount."""
+    fee_percent = SELL_FEE_PERCENT if amount_usd < 0 else BUY_FEE_PERCENT
+    fee_usd = abs(amount_usd) * (fee_percent / 100)
+    sol_price = utils.get_sol_price_usd()
+    return fee_usd / sol_price if sol_price > 0 else 0.0
 
 def estimate_fee_and_adjust_usd(usd_amount: float, congestion: Optional[bool]) -> float:
-    """
-    Use utils.calculate_total_gas_fee to get USD fee estimate and subtract from amount.
-    Falls back to returning original amount if estimator unavailable.
-    """
     try:
         est = utils.calculate_total_gas_fee(usd_amount, congestion=congestion, num_priority_txs=1)
         if est is None:
@@ -144,7 +139,6 @@ def estimate_fee_and_adjust_usd(usd_amount: float, congestion: Optional[bool]) -
     except Exception as e:
         logger.debug("calculate_total_gas_fee failed: %s - falling back.", e)
         return usd_amount
-
 
 # -------------------------
 # Market cap helper with retry
@@ -160,7 +154,6 @@ async def fetch_market_cap_with_retry(ca: str, retries: int = 3, delay: int = 2)
         logger.warning("Attempt %d failed to fetch market cap for %s. Retrying in %ds...", attempt, ca, delay)
         await asyncio.sleep(delay)
     return 0.0
-
 
 # -------------------------
 # Jupiter wrappers
@@ -180,7 +173,6 @@ def jupiter_buy_token(contract_mint: str, sol_amount: float, congestion_flag: bo
         logger.exception("jupiter_buy_token error: %s", e)
         return None
 
-
 def jupiter_sell_token(contract_mint: str, congestion_flag: bool) -> Optional[str]:
     try:
         raw_balance = get_token_balance_lamports(contract_mint)
@@ -196,15 +188,10 @@ def jupiter_sell_token(contract_mint: str, congestion_flag: bool) -> Optional[st
         logger.exception("jupiter_sell_token error: %s", e)
         return None
 
-
 # -------------------------
 # Simple utils used by sniper
 # -------------------------
 def subtract_tip_cost(usd_balance: float, tip_sol: float) -> float:
-    """
-    Convert a tip (in SOL) to USD and subtract from the USD balance.
-    Uses utils.sol_to_usd indirectly (via sol_to_usd) and safe-fallbacks.
-    """
     try:
         usd_per_sol = usd_to_sol(1)
         if not usd_per_sol or usd_per_sol <= 0:
@@ -214,11 +201,7 @@ def subtract_tip_cost(usd_balance: float, tip_sol: float) -> float:
     except Exception:
         return usd_balance
 
-
 def handle_cycle_reset() -> None:
-    """
-    Reset cycle state either via utils.reset_cycle_state (if implemented) or local fallback.
-    """
     global daily_trades, current_cycle_day
     try:
         if isinstance(CYCLE_LIMIT, int) and CYCLE_LIMIT == 0:
@@ -246,7 +229,6 @@ def handle_cycle_reset() -> None:
     except Exception as e:
         logger.exception("Error during handle_cycle_reset: %s", e)
 
-
 def report_trade_summary(
     ca: str,
     buy_mc: float,
@@ -258,7 +240,6 @@ def report_trade_summary(
     fee_sell_sol: float,
     balance: float,
 ) -> None:
-    """Send a short summary to the bot chat."""
     send_telegram_message(
         f"📊 Trade Complete\n"
         f"CA: {ca}\n"
@@ -267,64 +248,50 @@ def report_trade_summary(
         f"PnL: {pnl:.2f}%\n"
         f"Tx Buy: {tx_buy}\n"
         f"Tx Sell: {tx_sell}\n"
-        f"Priority Fee Buy: {fee_buy_sol:.6f} SOL\n"
-        f"Priority Fee Sell: {fee_sell_sol:.6f} SOL\n"
+        f"Buy Fee: {fee_buy_sol:.6f} SOL ({BUY_FEE_PERCENT}%)\n"
+        f"Sell Fee: {fee_sell_sol:.6f} SOL ({SELL_FEE_PERCENT}%)\n"
         f"Balance after compounding: ${balance:.2f}"
     )
-
 
 # -------------------------
 # Main message handler
 # -------------------------
 async def handle_new_message(event) -> None:
-    """
-    Processes new messages from target channel.
-    - Extract CA using utils.extract_contract_address
-    - Check if CA is valid and not already processed
-    - Execute buy logic with Jupiter API and record trade
-    """
     global current_usd_balance, daily_trades
 
     try:
-        # Extract message content
         message = event.message
         if not message or not hasattr(message, 'text') or not message.text:
             logger.warning("Received empty or invalid message event.")
             return
 
-        # Extract contract address
         contract_address = utils.extract_contract_address(message_text=message.text, message_obj=message)
         if not contract_address:
             logger.info("No valid contract address found in message: %s", message.text[:50])
             return
 
-        # Check if CA is already processed today
         if is_ca_processed(contract_address):
             logger.info("Contract address %s already processed, skipping.", contract_address)
             return
 
-        # Log the new CA
         logger.info("New contract address detected: %s", contract_address)
 
-        # Fetch market cap with retry
         market_cap = await fetch_market_cap_with_retry(contract_address)
         if market_cap == 0.0:
             logger.warning("Failed to fetch market cap for %s after retries, skipping.", contract_address)
             save_processed_ca(contract_address)
             return
-        elif market_cap > 1_000_000:  # Adjustable threshold
+        elif market_cap > 1_000_000:
             logger.warning("Market cap %f USD too high for sniper, skipping.", market_cap)
             save_processed_ca(contract_address)
             return
 
-        # Acquire lock for balance update
         async with balance_lock:
             invest_usd = get_next_investment()
             if invest_usd >= current_usd_balance:
                 logger.warning("Insufficient balance for investment: %f vs %f", invest_usd, current_usd_balance)
                 return
 
-            # Detect network congestion
             congestion = utils.detect_network_congestion()
             adjusted_usd = estimate_fee_and_adjust_usd(invest_usd, congestion)
             sol_amount = usd_to_sol(adjusted_usd)
@@ -332,8 +299,7 @@ async def handle_new_message(event) -> None:
                 logger.error("Invalid SOL amount calculated: %f", sol_amount)
                 return
 
-            # Execute buy via Jupiter
-            priority_fee_sol = calculate_gas_fee_sol_from_priority(congestion)
+            priority_fee_sol = calculate_gas_fee_sol_from_priority(adjusted_usd, congestion)
             tx_signature = jupiter_buy_token(contract_address, sol_amount, congestion)
             if not tx_signature or (DRY_RUN and tx_signature == "SIMULATED_TX_SIGNATURE"):
                 logger.error("Buy execution failed or in DRY_RUN mode: %s", tx_signature)
@@ -341,11 +307,9 @@ async def handle_new_message(event) -> None:
                     save_processed_ca(contract_address)
                 return
 
-            # Update balance after tip cost
             current_usd_balance = subtract_tip_cost(current_usd_balance, priority_fee_sol)
             save_balance(current_usd_balance)
 
-            # Record the buy
             utils.record_buy(
                 token=contract_address,
                 coin_name=utils.resolve_token_name(contract_address),
@@ -356,10 +320,8 @@ async def handle_new_message(event) -> None:
             daily_trades += 1
             logger.info("Buy executed successfully, TX: %s, Daily trades: %d/%d", tx_signature, daily_trades, current_daily_limit())
 
-            # Mark as processed
             save_processed_ca(contract_address)
 
-            # Check for sell condition (basic TP/SL)
             await check_sell_condition(contract_address, market_cap, tx_signature, priority_fee_sol)
 
     except FloodWaitError as e:
@@ -368,6 +330,7 @@ async def handle_new_message(event) -> None:
     except Exception as e:
         logger.exception("Error in handle_new_message: %s", str(e))
         return
+
 # -------------------------
 # Sell condition checker
 # -------------------------
@@ -395,12 +358,11 @@ async def check_sell_condition(contract_address: str, buy_market_cap: float, tx_
                     logger.info("Stop Loss hit: %.2f%% <= %.2f%%", profit_percent, STOP_LOSS)
                 else:
                     logger.debug("Holding %s, profit: %.2f%% (TP: %.2f%%, SL: %.2f%%)", contract_address, profit_percent, TAKE_PROFIT, STOP_LOSS)
-                    await asyncio.sleep(60)  # Check every minute
+                    await asyncio.sleep(60)
                     continue
 
-                # Execute sell
                 congestion = utils.detect_network_congestion()
-                priority_fee_sol = calculate_gas_fee_sol_from_priority(congestion)
+                priority_fee_sol = calculate_gas_fee_sol_from_priority(-sell_market_cap, congestion)
                 tx_sell = jupiter_sell_token(contract_address, congestion)
                 if not tx_sell or (DRY_RUN and tx_sell == "SIMULATED_TX_SIGNATURE"):
                     logger.error("Sell execution failed or in DRY_RUN mode: %s", tx_sell)
@@ -408,12 +370,10 @@ async def check_sell_condition(contract_address: str, buy_market_cap: float, tx_
                         break
                     continue
 
-                # Calculate profit and update balance
                 profit_usd = (sell_market_cap - buy_market_cap) * (token_balance / LAMPORTS_PER_SOL) * (1 / buy_market_cap)
                 current_usd_balance = subtract_tip_cost(current_usd_balance + profit_usd, priority_fee_sol)
                 save_balance(current_usd_balance)
 
-                # Record the sell and report
                 utils.record_sell(contract_address, sell_market_cap, profit_usd, priority_fee_sol)
                 report_trade_summary(
                     ca=contract_address,
@@ -432,3 +392,20 @@ async def check_sell_condition(contract_address: str, buy_market_cap: float, tx_
 
     except Exception as e:
         logger.exception("Error in check_sell_condition for %s: %s", contract_address, str(e))
+
+# -------------------------
+# Main entry point
+# -------------------------
+async def main():
+    try:
+        await initialize_telegram_client()
+        client.add_event_handler(handle_new_message, events.NewMessage(chats=TARGET_CHANNEL_ID))
+        logger.info("Starting Telegram client for event handling...")
+        await client.run_until_disconnected()
+    except Exception as e:
+        logger.error("Main loop error: %s. Reconnecting in 10 seconds...", e)
+        await asyncio.sleep(10)
+        await main()
+
+if __name__ == "__main__":
+    asyncio.run(main())
