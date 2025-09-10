@@ -67,37 +67,46 @@ def _load_keypair_from_env() -> Keypair:
     """
     PRIVATE_KEY can be:
       - JSON array of 64 bytes:   "[12,34,...]"
-      - base58 string (phantom):  "5y7...."
+      - base58 string (Phantom):  "5y7...."
       - hex string:               "ab12cd34..."
     Returns a solders Keypair.
     """
     sk = os.getenv("PRIVATE_KEY")
     if not sk:
         raise EnvironmentError("PRIVATE_KEY missing in env")
-    # JSON array (bytes)
+
+    # JSON array
     try:
         if sk.strip().startswith("["):
             arr = json.loads(sk)
             if isinstance(arr, list):
                 sk_bytes = bytes(arr)
-                return Keypair.from_secret_key(sk_bytes)
+                kp = Keypair.from_bytes(sk_bytes)
+                logger.info("Loaded PRIVATE_KEY from JSON array")
+                return kp
     except Exception:
-        # fallthrough to other decodings
-        pass
-    # base58
+        pass  # fallthrough
+
+    # Base58 (Phantom style)
     try:
         sk_bytes = base58.b58decode(sk)
-        return Keypair.from_secret_key(sk_bytes)
+        kp = Keypair.from_bytes(sk_bytes)
+        logger.info("Loaded PRIVATE_KEY from Base58 (Phantom style)")
+        return kp
     except Exception:
-        # hex
-        try:
-            sk_bytes = bytes.fromhex(sk)
-            return Keypair.from_secret_key(sk_bytes)
-        except Exception as e:
-            logger.exception("Failed to parse PRIVATE_KEY (base58/json/hex): %s", e)
-            raise
+        pass  # fallthrough
 
-# Load keypair on import; if PRIVATE_KEY missing this will raise immediately.
+    # Hex string
+    try:
+        sk_bytes = bytes.fromhex(sk)
+        kp = Keypair.from_bytes(sk_bytes)
+        logger.info("Loaded PRIVATE_KEY from hex string")
+        return kp
+    except Exception as e:
+        logger.error("Failed to parse PRIVATE_KEY (base58/json/hex): %s", e)
+        raise
+
+# Load keypair on import; fail fast if PRIVATE_KEY invalid
 KEYPAIR = _load_keypair_from_env()
 PUBLIC_KEY = os.getenv("PUBLIC_KEY") or str(KEYPAIR.public_key)
 
