@@ -1,4 +1,3 @@
-# utils.py
 import os
 import json
 import time
@@ -40,7 +39,6 @@ def load_env(dotenv_path: Optional[str] = None) -> None:
         load_dotenv()
 
 # Explicitly load "t.env" in home directory on import to make CLI runs easy.
-# If your main file calls load_env again, it's harmless (dotenv merges).
 load_env(os.path.expanduser("~/t.env"))
 
 # ============================================================
@@ -122,14 +120,8 @@ DEXSCREENER_API_KEY = os.getenv("DEXSCREENER_API_KEY", "")
 # ============================================================
 # Bot trading config (ALL configurable via t.env)
 # ============================================================
-# Source of truth for the *starting* bankroll each cycle/day. Compounding happens in sniper.py.
 DAILY_CAPITAL_USD = float(os.getenv("DAILY_CAPITAL_USD", "25"))
-
-# Daily max buys (or tuple "5,4" to rotate across days). Used by sniper.py via CYCLE_LIMIT.
-# We keep DAILY_LIMITS only for backward compatibility with older configs that import it.
 DAILY_LIMITS = int(os.getenv("DAILY_LIMITS", os.getenv("MAX_BUYS_PER_DAY", "5")))
-
-# Parse CYCLE_LIMIT from env; support single int or tuple like "5,4,6"
 _raw_cycle = os.getenv("CYCLE_LIMIT", str(DAILY_LIMITS))
 if "," in _raw_cycle:
     try:
@@ -138,34 +130,19 @@ if "," in _raw_cycle:
         logger.warning("Invalid CYCLE_LIMIT format '%s'. Falling back to single value.", _raw_cycle)
         CYCLE_LIMIT = (int(DAILY_LIMITS),)
 else:
-    # allow int or str that represents int
     try:
         CYCLE_LIMIT = int(_raw_cycle)
     except Exception:
         CYCLE_LIMIT = int(DAILY_LIMITS)
 
-# Risk params
-TAKE_PROFIT = float(os.getenv("TAKE_PROFIT", os.getenv("TAKE_PROFIT_MULTIPLIER", "100")))   # %
-STOP_LOSS   = float(os.getenv("STOP_LOSS",   os.getenv("STOP_LOSS_PERCENT",     "-20")))    # %
-
-# Priority fees in SOL (names align with your t.env)
-NORMAL_PRIORITY_FEE = float(os.getenv("NORMAL_PRIORITY_FEE", os.getenv("NORMAL_TIP_SOL",     "0.015")))
-HIGH_PRIORITY_FEE   = float(os.getenv("HIGH_PRIORITY_FEE",   os.getenv("CONGESTION_TIP_SOL", "0.1")))
-
-# MEV toggles
+TAKE_PROFIT = float(os.getenv("TAKE_PROFIT", os.getenv("TAKE_PROFIT_MULTIPLIER", "100")))
+STOP_LOSS   = float(os.getenv("STOP_LOSS",   os.getenv("STOP_LOSS_PERCENT",     "-20")))
+BUY_FEE_PERCENT = float(os.getenv("BUY_FEE_PERCENT", "1.0"))
+SELL_FEE_PERCENT = float(os.getenv("SELL_FEE_PERCENT", "1.0"))
 MEV_PROTECTION = int(os.getenv("MEV_PROTECTION", "1"))
-
-# Manual congestion override (1 = force HIGH_PRIORITY_FEE)
 MANUAL_CONGESTION = int(os.getenv("MANUAL_CONGESTION", "0"))
-
-# Processed CA store (used to avoid duplicates per day)
 PROCESSED_FILE = os.getenv("PROCESSED_FILE", "processed_ca.txt")
-
-# Gas buffer % of USD balance to reserve after each trade (e.g. 0.009 = 0.9%)
 GAS_BUFFER = float(os.getenv("GAS_BUFFER", "0.009"))
-
-# Optional REINVESTMENT_PLAN env (string like "1:5,2:4") — we provide parser but do not require it.
-# If not present, get_daily_reinvestment_plan() uses the built-in defaults.
 REINVESTMENT_PLAN_RAW = os.getenv("REINVESTMENT_PLAN", "")
 
 # ============================================================
@@ -231,9 +208,6 @@ def clear_processed_ca() -> None:
 import re
 
 def extract_contract_address(message_text: str = None, message_obj=None) -> Optional[str]:
-    """
-    Try to extract a Solana mint/CA from the text, or from inline button URLs.
-    """
     if message_text:
         m = re.search(r"[A-Za-z0-9]{32,44}", message_text)
         if m:
@@ -243,7 +217,6 @@ def extract_contract_address(message_text: str = None, message_obj=None) -> Opti
             for row in message_obj.reply_markup.rows:
                 for button in row.buttons:
                     if hasattr(button, "url") and button.url:
-                        # Exclude O/0/I/l ambiguous chars (base58-ish)
                         matches = re.findall(r"[1-9A-HJ-NP-Za-km-z]{32,44}", button.url)
                         if matches:
                             return matches[-1]
@@ -254,19 +227,13 @@ def extract_contract_address(message_text: str = None, message_obj=None) -> Opti
 # ============================================================
 # Price / conversions (CoinGecko primary, Jupiter fallback, cached)
 # ============================================================
-# Simple in-process cache for SOL price to avoid hitting remote APIs too frequently.
 _sol_price_cache: Dict[str, Any] = {"price": 0.0, "ts": 0.0}
-_SOL_PRICE_TTL = int(os.getenv("SOL_PRICE_TTL_SEC", "15"))  # cache ttl in seconds
+_SOL_PRICE_TTL = int(os.getenv("SOL_PRICE_TTL_SEC", "15"))
 
 def _now_ts() -> float:
     return time.time()
 
 def get_sol_price_usd(timeout: int = 6, force_refresh: bool = False) -> float:
-    """
-    Get SOL price in USD using CoinGecko first, fallback to Jupiter price API.
-    Uses a short in-process TTL cache to avoid rate limits.
-    Returns 0.0 on failure.
-    """
     try:
         if not force_refresh and (_now_ts() - _sol_price_cache["ts"]) < _SOL_PRICE_TTL and _sol_price_cache["price"] > 0:
             return float(_sol_price_cache["price"])
@@ -274,7 +241,6 @@ def get_sol_price_usd(timeout: int = 6, force_refresh: bool = False) -> float:
         pass
 
     price = 0.0
-    # Try CoinGecko
     try:
         cg_url = "https://api.coingecko.com/api/v3/simple/price"
         params = {"ids": "solana", "vs_currencies": "usd"}
@@ -286,7 +252,6 @@ def get_sol_price_usd(timeout: int = 6, force_refresh: bool = False) -> float:
     except Exception as e:
         logger.debug("CoinGecko fetch failed: %s", e)
 
-    # Fallback to Jupiter
     if not price:
         try:
             r = requests.get(f"{JUPITER_PRICE_API}?ids=SOL", timeout=timeout)
@@ -299,7 +264,6 @@ def get_sol_price_usd(timeout: int = 6, force_refresh: bool = False) -> float:
         except Exception as e:
             logger.warning("get_sol_price_usd fallback failed: %s", e)
 
-    # update cache
     try:
         _sol_price_cache["price"] = float(price)
         _sol_price_cache["ts"] = _now_ts()
@@ -312,10 +276,6 @@ def get_sol_price_usd(timeout: int = 6, force_refresh: bool = False) -> float:
     return float(price)
 
 def usd_to_sol_live(usd: float) -> Optional[float]:
-    """
-    Convert USD amount to SOL using live SOL/USD price.
-    Returns None if price unavailable.
-    """
     price = get_sol_price_usd()
     if price <= 0:
         logger.warning("usd_to_sol_live: SOL price unavailable.")
@@ -323,20 +283,12 @@ def usd_to_sol_live(usd: float) -> Optional[float]:
     return round(float(usd) / price, 9)
 
 def usd_to_sol(usd: float) -> float:
-    """
-    Backwards-compatible wrapper that returns 0.0 on failure (keeps old behavior).
-    Prefer using usd_to_sol_live where you want explicit None on failure.
-    """
     sol = usd_to_sol_live(usd)
     if sol is None:
         return 0.0
     return sol
 
 def sol_to_usd(sol: float) -> float:
-    """
-    Convert SOL to USD using the current spot price.
-    Returns 0.0 if price unavailable.
-    """
     price = get_sol_price_usd()
     if price <= 0:
         logger.warning("SOL price unknown, sol_to_usd returning 0.0")
@@ -387,9 +339,6 @@ def get_market_cap_from_birdeye(contract_address: str) -> Optional[float]:
     return None
 
 def get_market_cap(contract_address: str) -> Optional[float]:
-    """
-    Try dexscreener first, fallback to birdeye.
-    """
     mcap = get_market_cap_from_dexscreener(contract_address)
     if mcap:
         return mcap
@@ -397,13 +346,8 @@ def get_market_cap(contract_address: str) -> Optional[float]:
 
 # ============================================================
 # Network congestion / priority fee
-# (unchanged behavior; USD->SOL override applied via _try_apply_usd_tip_overrides)
 # ============================================================
 def detect_network_congestion(timeout_ms: int = 600) -> bool:
-    """
-    Naive congestion detector based on RPC latency for get_slot().
-    If MANUAL_CONGESTION is set, always returns True.
-    """
     try:
         if MANUAL_CONGESTION:
             return True
@@ -412,77 +356,12 @@ def detect_network_congestion(timeout_ms: int = 600) -> bool:
         elapsed_ms = (time.time() - start) * 1000
         return elapsed_ms > timeout_ms
     except Exception:
-        return True  # assume congested on error
-
-def get_priority_fee_manual() -> float:
-    """
-    Decide priority fee in SOL based on congestion or manual override.
-    """
-    if MANUAL_CONGESTION:
-        return HIGH_PRIORITY_FEE
-    try:
-        congested = detect_network_congestion()
-        return HIGH_PRIORITY_FEE if congested else NORMAL_PRIORITY_FEE
-    except Exception:
-        return HIGH_PRIORITY_FEE
+        return True
 
 def get_priority_fee(congestion: Optional[bool] = None) -> float:
-    """
-    Priority fee in SOL. If congestion is provided, uses that flag.
-    """
-    if congestion is not None:
-        return HIGH_PRIORITY_FEE if congestion else NORMAL_PRIORITY_FEE
-    return get_priority_fee_manual()
-
-# ============================================================
-# Support USD-based tipping configuration (optional)
-# Reads NORMAL_TIP_USD, CONGESTION_TIP_USD, GAS_BUFFER_USD and attempts
-# to convert them to SOL / use absolute USD buffer when provided.
-# ============================================================
-_NORMAL_TIP_USD = os.getenv("NORMAL_TIP_USD", "")  # e.g., "6"
-_CONGESTION_TIP_USD = os.getenv("CONGESTION_TIP_USD", "")  # e.g., "20"
-_GAS_BUFFER_USD = os.getenv("GAS_BUFFER_USD", "")  # e.g., "5"
-
-# We'll populate this if user provided GAS_BUFFER_USD and conversion succeeded
-GAS_BUFFER_USD: Optional[float] = None
-
-def _try_apply_usd_tip_overrides():
-    global NORMAL_PRIORITY_FEE, HIGH_PRIORITY_FEE, GAS_BUFFER_USD
-    try:
-        # Normal tip
-        if _NORMAL_TIP_USD:
-            try:
-                n_usd = float(_NORMAL_TIP_USD)
-                sol = usd_to_sol_live(n_usd)
-                if sol is not None and sol > 0:
-                    NORMAL_PRIORITY_FEE = float(sol)
-                    logger.info("NORMAL_PRIORITY_FEE overridden from NORMAL_TIP_USD=%.2f USD -> %.6f SOL", n_usd, sol)
-            except Exception as e:
-                logger.debug("Failed to parse NORMAL_TIP_USD: %s", e)
-
-        # Congestion tip
-        if _CONGESTION_TIP_USD:
-            try:
-                c_usd = float(_CONGESTION_TIP_USD)
-                sol = usd_to_sol_live(c_usd)
-                if sol is not None and sol > 0:
-                    HIGH_PRIORITY_FEE = float(sol)
-                    logger.info("HIGH_PRIORITY_FEE overridden from CONGESTION_TIP_USD=%.2f USD -> %.6f SOL", c_usd, sol)
-            except Exception as e:
-                logger.debug("Failed to parse CONGESTION_TIP_USD: %s", e)
-
-        # GAS_BUFFER in USD (absolute USD reserve per trade)
-        if _GAS_BUFFER_USD:
-            try:
-                GAS_BUFFER_USD = float(_GAS_BUFFER_USD)
-                logger.info("GAS_BUFFER_USD set to %.2f USD (absolute)", GAS_BUFFER_USD)
-            except Exception as e:
-                logger.debug("Failed to parse GAS_BUFFER_USD: %s", e)
-    except Exception as e:
-        logger.debug("USD-tip conversion step failed (non-fatal): %s", e)
-
-# Attempt to apply overrides now (non-fatal if network down)
-_try_apply_usd_tip_overrides()
+    if congestion is None:
+        congestion = detect_network_congestion()
+    return (SELL_FEE_PERCENT if congestion else BUY_FEE_PERCENT) / 100
 
 # ============================================================
 # Gas fee calculation & reserve
@@ -494,50 +373,27 @@ def calculate_total_gas_fee(
     base_reserve_pct: Optional[float] = None,
     num_priority_txs: int = 1
 ) -> Optional[float]:
-    """
-    Estimated *USD* gas/priority cost for a trade.
-
-    - amount_in_usd: your intended USD size for this leg.
-    - congestion: override auto-detection (True=high fee, False=normal).
-    - base_reserve_pct: if provided, add a base reserve (defaults to GAS_BUFFER env).
-    - num_priority_txs: number of priority-fee-bearing txs to account for (1 for buy, 2 for round-trip).
-
-    Returns: total USD fee estimate (float), or None if SOL price unknown.
-    """
     sol_price = get_sol_price_usd()
     if sol_price <= 0:
         logger.warning("SOL price unknown; cannot compute gas fee accurately.")
         return None
 
-    # Determine base reserve in USD
     if base_reserve_pct is not None:
         reserve_pct = base_reserve_pct
         base_fee_usd = amount_in_usd * float(reserve_pct)
     else:
-        # If GAS_BUFFER_USD is set, use that absolute USD value instead of percent
-        if 'GAS_BUFFER_USD' in globals() and GAS_BUFFER_USD is not None:
-            base_fee_usd = float(GAS_BUFFER_USD)
-        else:
-            reserve_pct = GAS_BUFFER
-            base_fee_usd = amount_in_usd * float(reserve_pct)
+        reserve_pct = GAS_BUFFER
+        base_fee_usd = amount_in_usd * float(reserve_pct)
 
-    # Priority fee component in USD
     if congestion is None:
         congestion = detect_network_congestion()
-    priority_fee_sol = HIGH_PRIORITY_FEE if congestion else NORMAL_PRIORITY_FEE
-    priority_fee_usd_per_tx = priority_fee_sol * sol_price
+    priority_fee_percent = SELL_FEE_PERCENT if congestion else BUY_FEE_PERCENT
+    priority_fee_usd = abs(amount_in_usd) * (priority_fee_percent / 100)
 
-    # Multiply by number of prioritized txs (e.g., 1 buy or 2 buy+sell)
-    total_priority_usd = priority_fee_usd_per_tx * max(int(num_priority_txs), 1)
-
-    total_usd = base_fee_usd + total_priority_usd
+    total_usd = base_fee_usd + priority_fee_usd
     return round(total_usd, 6)
 
 def save_gas_reserve_after_trade(current_usd_balance: float, reserve_pct: float = GAS_BUFFER) -> float:
-    """
-    After each trade completes, skim off a % of the *current* balance to keep as a small gas runway.
-    This is intentionally tiny (default 0.9%), and *compounding code in sniper.py* handles reinvest sizing.
-    """
     reserve = current_usd_balance * float(reserve_pct)
     new_balance = current_usd_balance - reserve
     logger.info(
@@ -550,9 +406,6 @@ def save_gas_reserve_after_trade(current_usd_balance: float, reserve_pct: float 
 # Token balance (RPC)
 # ============================================================
 def get_token_balance_lamports(token_mint: str) -> int:
-    """
-    Sum lamports across all token accounts for PUBLIC_KEY / token_mint.
-    """
     try:
         body = {
             "jsonrpc": "2.0",
@@ -597,10 +450,6 @@ def fetch_jupiter_quote(
     slippage_bps: int = 50,
     only_direct: bool = False
 ) -> Optional[Dict[str, Any]]:
-    """
-    Fetch a quote route from Jupiter API for a token swap.
-    Returns the *first* route dict (quote) or None.
-    """
     try:
         params = {
             "inputMint":          input_mint,
@@ -609,7 +458,6 @@ def fetch_jupiter_quote(
             "slippageBps":        slippage_bps,
             "onlyDirectRoutes":   only_direct,
         }
-        # add asymmetricSlippage only when MEV_PROTECTION is truthy
         if MEV_PROTECTION:
             params["asymmetricSlippage"] = True
 
@@ -617,11 +465,9 @@ def fetch_jupiter_quote(
         r.raise_for_status()
         data = r.json()
 
-        # v6 often returns {"data":[{...route...}, ...]}
         if isinstance(data, dict) and "data" in data and isinstance(data["data"], list) and data["data"]:
             return data["data"][0]
 
-        # Some servers respond with {"route": {...}}
         if isinstance(data, dict) and data.get("route"):
             return data.get("route")
 
@@ -631,47 +477,31 @@ def fetch_jupiter_quote(
         logger.exception("fetch_jupiter_quote error: %s", e)
         return None
 
-# ---------- solders compatibility helpers ----------
 def _safe_deserialize_transaction(raw: bytes) -> Transaction:
-    """
-    Handle solders builds that prefer Transaction.deserialize(raw) vs Transaction.from_bytes(raw).
-    """
-    # Try deserialize first (most common)
     try:
         return Transaction.deserialize(raw)
     except Exception as e1:
         logger.debug("Transaction.deserialize failed; trying Transaction.from_bytes. err=%s", e1)
         try:
-            # Some wheels require from_bytes
-            return Transaction.from_bytes(raw)  # type: ignore[attr-defined]
+            return Transaction.from_bytes(raw)
         except Exception as e2:
             logger.error("Both Transaction.deserialize and from_bytes failed. e1=%s e2=%s", e1, e2)
             raise
 
 def _safe_sign_transaction(tx: Transaction, keypair: Keypair) -> None:
-    """
-    Some solders builds want tx.sign([kp]); others want tx.sign(kp).
-    Try list first, then single. If both fail, raise the final exception.
-    """
     try:
-        tx.sign([keypair])  # works on many recent solders versions
+        tx.sign([keypair])
         return
     except Exception as e1:
         logger.debug(".sign([KEYPAIR]) failed; trying .sign(KEYPAIR). err=%s", e1)
         try:
-            tx.sign(keypair)  # type: ignore[arg-type]
+            tx.sign(keypair)
             return
         except Exception as e2:
             logger.error("Failed to sign transaction via both styles. e1=%s e2=%s", e1, e2)
-            # re-raise the last exception to the caller
             raise
 
 def execute_jupiter_swap_from_quote(quote: dict, congestion: bool = False) -> Optional[str]:
-    """
-    Execute a Jupiter swap using solders.Transaction.
-    Handles DRY_RUN, priority fee, and MEV protection.
-    Returns the transaction signature (str) or None on failure.
-    """
     if DRY_RUN:
         logger.info("[DRY RUN] execute_jupiter_swap_from_quote - simulated")
         return "SIMULATED_TX_SIGNATURE"
@@ -684,23 +514,23 @@ def execute_jupiter_swap_from_quote(quote: dict, congestion: bool = False) -> Op
             "asymmetricSlippage": bool(MEV_PROTECTION),
         }
 
-        priority_fee_sol = get_priority_fee(congestion)
-        payload["prioritizationFeeLamports"] = int(priority_fee_sol * 1_000_000_000)
+        priority_fee_percent = SELL_FEE_PERCENT if congestion else BUY_FEE_PERCENT
+        priority_fee_usd = abs(quote.get("inAmount", 0) / 1_000_000_000) * (priority_fee_percent / 100)
+        sol_price = get_sol_price_usd()
+        priority_fee_lamports = int((priority_fee_usd / sol_price) * 1_000_000_000) if sol_price > 0 else 0
+        payload["prioritizationFeeLamports"] = priority_fee_lamports
 
         r = requests.post(JUPITER_SWAP_API, json=payload, timeout=20)
         r.raise_for_status()
         swap_json = r.json()
 
-        # Extract base64 transaction
         swap_tx_b64 = (
             swap_json.get("swapTransaction")
             or swap_json.get("data", {}).get("swapTransaction")
         )
         if not swap_tx_b64:
-            # Fallback: try to detect a long base64 string in the response
             for v in swap_json.values():
                 if isinstance(v, str) and len(v) > 100:
-                    # additional heuristic: basic base64 charset check
                     if set(v[:4]).issubset(set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")):
                         swap_tx_b64 = v
                         break
@@ -738,26 +568,16 @@ def execute_jupiter_swap_from_quote(quote: dict, congestion: bool = False) -> Op
         return None
 
 def sign_transaction(tx, keypair):
-    """
-    Backwards-compatible wrapper to sign a solders transaction object.
-    Kept for external modules that expect a simple helper.
-    """
     try:
         tx.sign([keypair])
     except TypeError:
-        # some builds expect the keypair directly
         tx.sign(keypair)
     return tx
 
 # ============================================================
 # Reinvestment Plan Utilities
 # ============================================================
-
 def _parse_reinvestment_plan_env(raw: str) -> Dict[int, int]:
-    """
-    Parse REINVESTMENT_PLAN env format (e.g. "1:5,2:4,3:3") into {day:reinvestments}.
-    Returns an empty dict on parse failure or empty input.
-    """
     if not raw:
         return {}
     plan: Dict[int, int] = {}
@@ -774,54 +594,27 @@ def _parse_reinvestment_plan_env(raw: str) -> Dict[int, int]:
         return {}
     return plan
 
-# cached parsed env plan (if provided)
 _REINVESTMENT_PLAN_PARSED = _parse_reinvestment_plan_env(REINVESTMENT_PLAN_RAW)
 
 def get_daily_reinvestment_plan(day: int) -> int:
-    """
-    Returns the number of reinvestments allowed for a given cycle day.
-
-    Behavior:
-      - If REINVESTMENT_PLAN env is set (e.g. "1:5,2:4"), it is used.
-      - Otherwise defaults to builtin plan {1:5, 2:4}.
-      - If day requested not found, default to the day 1 plan.
-
-    Example:
-        Day 1 → 5 reinvestments
-        Day 2 → 4 reinvestments
-    """
-    # builtin fallback
     builtin_plan = {1: 5, 2: 4}
-
-    # If user provided a custom env plan, merge with builtin where missing
     if _REINVESTMENT_PLAN_PARSED:
         plan = dict(builtin_plan)
         plan.update(_REINVESTMENT_PLAN_PARSED)
     else:
         plan = builtin_plan
-
     return plan.get(day, plan[1])
 
 # ============================================================
 # Small utilities used by reporting / other modules
 # ============================================================
 def md_code(s: str) -> str:
-    """
-    Wrap code/addresses in monospace Markdown to send to Telegram.
-    """
     if not s:
         return "`N/A`"
-    # escape backticks if any
     safe = s.replace("`", "'")
     return f"`{safe}`"
 
 def resolve_token_name(contract_address: str) -> Optional[str]:
-    """
-    Best-effort token name resolver. For now this is a light wrapper that tries:
-      - Dexscreener -> pair name
-      - Simple heuristics
-    Returns token name (string) or None if unknown.
-    """
     if not contract_address:
         return None
     try:
@@ -830,7 +623,6 @@ def resolve_token_name(contract_address: str) -> Optional[str]:
         if r.ok:
             data = r.json()
             if isinstance(data, dict):
-                # "pair" or "pairs" may contain names
                 if "pair" in data and data["pair"].get("baseToken", {}).get("name"):
                     return data["pair"]["baseToken"]["name"]
                 if "pairs" in data and data["pairs"]:
@@ -840,25 +632,17 @@ def resolve_token_name(contract_address: str) -> Optional[str]:
                         return name
     except Exception:
         pass
-    # fallback: return shortened address
     return contract_address[:6] + "..." + contract_address[-4:]
 
 # ============================================================
-# Cycle reset helper (user asked to add)
+# Cycle reset helper
 # ============================================================
-# internal cycle state variables (module-level)
 cycle_active = False
 reinvestment_amount = float(os.getenv("DAILY_CAPITAL_USD", "25"))
 
 def reset_cycle_state() -> bool:
-    """
-    Reset reinvestment cycle back to base starting amount (reads DAILY_CAPITAL_USD env).
-    Ensures this only runs if `cycle_active` is True (meaning we were in a cycle).
-    Returns True if a reset occurred, False if already reset.
-    """
     global reinvestment_amount, cycle_active
     if not cycle_active:
-        # Already reset or not started
         return False
     base = float(os.getenv("DAILY_CAPITAL_USD", "25"))
     reinvestment_amount = base
@@ -867,9 +651,6 @@ def reset_cycle_state() -> bool:
     return True
 
 def set_cycle_active(active: bool = True) -> None:
-    """
-    Mark the cycle active/inactive. Sniper.py can call this to control resets.
-    """
     global cycle_active
     cycle_active = bool(active)
 
@@ -877,17 +658,14 @@ def set_cycle_active(active: bool = True) -> None:
 # Utility: human-readable summary and helpers for debugging
 # ============================================================
 def env_summary() -> str:
-    """
-    Return short textual summary of important env/config values for debugging.
-    """
     lines = [
         f"DRY_RUN={DRY_RUN}",
         f"RPC_URL={RPC_URL}",
         f"PUBLIC_KEY={PUBLIC_KEY}",
         f"DAILY_CAPITAL_USD={DAILY_CAPITAL_USD}",
         f"GAS_BUFFER={GAS_BUFFER}",
-        f"NORMAL_PRIORITY_FEE={NORMAL_PRIORITY_FEE}",
-        f"HIGH_PRIORITY_FEE={HIGH_PRIORITY_FEE}",
+        f"BUY_FEE_PERCENT={BUY_FEE_PERCENT}",
+        f"SELL_FEE_PERCENT={SELL_FEE_PERCENT}",
         f"MEV_PROTECTION={MEV_PROTECTION}",
         f"MANUAL_CONGESTION={MANUAL_CONGESTION}",
         f"CYCLE_LIMIT={CYCLE_LIMIT}",
@@ -899,12 +677,6 @@ def env_summary() -> str:
 # Example helper: how to size SOL amount after reserving estimated USD gas
 # ============================================================
 def compute_sol_amount_for_trade(desired_usd: float, congestion: Optional[bool] = None, num_priority_txs: int = 1) -> Optional[float]:
-    """
-    Convenience helper:
-      - Estimate total USD gas needed (priority fee + reserve)
-      - Subtract it from desired_usd and convert remainder to SOL (rounded)
-    Returns SOL amount (float) or None if SOL price unknown.
-    """
     est_gas_usd = calculate_total_gas_fee(desired_usd, congestion=congestion, num_priority_txs=num_priority_txs)
     if est_gas_usd is None:
         return None
