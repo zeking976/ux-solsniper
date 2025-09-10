@@ -432,5 +432,3 @@ async def check_sell_condition(contract_address: str, buy_market_cap: float, tx_
 
     except Exception as e:
         logger.exception("Error in check_sell_condition for %s: %s", contract_address, str(e))
-
-logger.info("🚀 Sniper worker started successfully")
