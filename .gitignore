@@ -1,52 +1,28 @@
-# -------------------------
-# Python cache & compiled files
-# -------------------------
 __pycache__/
 *.py[cod]
 *$py.class
 
-# -------------------------
-# OS files
-# -------------------------
 .DS_Store
 Thumbs.db
 
-# -------------------------
-# Environment files
-# -------------------------
 .env
 t.env
 
-# -------------------------
-# Virtual environments
-# -------------------------
 venv/
 ENV/
 env/
 .venv/
 
-# -------------------------
-# IDE / Editor configs
-# -------------------------
 .vscode/
 .idea/
 *.iml
 
-# -------------------------
-# Systemd / service files
-# -------------------------
 *.service
 
-# -------------------------
-# Jupyter cache & logs
-# -------------------------
 .jup_cache/
 .jup_logs/
 .ipynb_checkpoints/
 
-# -------------------------
-# Data files
-# -------------------------
 *.csv
 *.pdf
 *.xlsx
@@ -54,36 +30,19 @@ env/
 *.odt
 *.odp
 
-# -------------------------
-# Build / distribution
-# -------------------------
 *.spec
 dist/
 build/
 *.egg-info/
 
-# -------------------------
-# Telethon sessions
-# -------------------------
 *.session
 *.session-journal
 
-# -------------------------
-# Backup / temp files
-# -------------------------
 *~
 *.bak
 *.tmp
 *.swp
 *.so
 
-# -------------------------
-# Logs (only bot.log is tracked)
-# -------------------------
 *.log
 !bot.log
-
-# -------------------------
-# JSON reports (keep tracked)
-# -------------------------
-# *.json  ← intentionally not ignored
