@@ -16,7 +16,7 @@ from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solana.rpc.api import Client as SolanaClient
 from solana.rpc.types import TokenAccountOpts
-from solana.publickey import PublicKey
+from solders.pubkey import Pubkey
 
 # ============================================================
 # Solana libs for signing and broadcast (solders-compatible)
