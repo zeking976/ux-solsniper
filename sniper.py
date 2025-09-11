@@ -65,8 +65,8 @@ def save_balance(balance: float) -> None:
 INITIAL_USD_BALANCE = float(os.getenv("DAILY_CAPITAL_USD", "25"))
 current_usd_balance = load_balance(INITIAL_USD_BALANCE)
 
-# --- Telegram client (session file in Termux directory) ---
-session_name = os.path.join("/data/data/com.termux/files/home/ux-solsniper", os.getenv("SESSION_NAME", "sniper_session"))
+# --- Telegram client (session file portable across VPS/Termux) ---
+session_name = os.path.join(os.getcwd(), os.getenv("SESSION_NAME", "sniper_session"))
 client = None
 
 async def initialize_telegram_client():
