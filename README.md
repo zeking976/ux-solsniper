@@ -4,6 +4,8 @@ UX SolSniper is a high-speed **automated Solana meme coin sniper bot** with **re
 
 ---
 
+MAKE A TELETHON SESSION FILE
+
 ## 🔥 Key Features  
 
 ### 📲 Telegram Integration  
