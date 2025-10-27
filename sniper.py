@@ -94,9 +94,10 @@ _last_cycle_date = date.today()
 BALANCE_FILE = "balance.json"
 current_usd_balance = None
 
-# ---------- Telegram client ----------
+# # ---------- Telegram client ----------
+client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
+@client.on(events.NewMessage(chats=TARGET_CHANNEL_ID))
 async def _on_new_message(event):
-    await asyncio.sleep(0.1)  # Small delay to prevent flooding
     """
     Robust Telegram handler:
       - logs raw message
@@ -182,13 +183,7 @@ async def _on_new_message(event):
         await enqueue_ca(_pending_cas, ca)
         logger.info("✅     Enqueued CA for processing: %s", ca)
     except Exception as e:
-        logger.exception("Error in process_message: %s", e)
-
-async def handle_message(event):
-    asyncio.create_task(_on_new_message(event))  # Offload processing
-
-client = TelegramClient(SESSION_NAME, API_ID, API_HASH, timeout=30)
-client.on(events.NewMessage(chats=TARGET_CHANNEL_ID))(handle_message)
+        logger.exception("Error in _on_new_message: %s", e)
 
 # ---------Token_name----------
 def resolve_token_name(ca: str) -> str:
