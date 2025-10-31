@@ -1,13 +1,23 @@
-python-dotenv==1.1.1
-requests==2.31.0
+# 🧠 Core dependencies
+python-dotenv==1.0.1
+requests==2.32.3
+aiohttp==3.9.5
+httpx==0.27.2
+
+# 💬 Telegram integration
 telethon==1.34.0
+
+# 🔑 Solana + Jupiter Ultra
 solders>=0.18.1
 solana>=0.36.9
 base58==2.1.1
-httpx
-pytz==2024.1
 cryptography==41.0.3
+
+# 🕓 Scheduling, timezone, logging
 schedule==1.2.1
-aiohttp==3.9.5
-pillow==10.4.0
+pytz==2024.1
+loguru==0.7.2
+
+# 📈 Visualization (for reports)
 matplotlib==3.9.2
+pillow==10.4.0
