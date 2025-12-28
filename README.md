@@ -48,6 +48,9 @@ CHAT_ID=your_telegram_chat_id
 DAILY_CAPITAL_USD=100
 
 
+# ================================
+
+
 ---
 
 ▶️ Running the Bot
